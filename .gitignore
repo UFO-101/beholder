@@ -1,27 +1,55 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build outputs
+dist/
+build/
+.wrangler/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Python (for local data processing)
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-images/
-lib/
-lib64/
-location_cache.json
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-.venv/
-venv/
-ENV/
 env/
+venv/
+.venv/
+
+# Local data
+images/
+location_cache.json
+*.sqlite
+*.db
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Cloudflare
+.dev.vars

@@ -1,0 +1,21 @@
+name = "beauty-api"
+main = "worker.js"
+compatibility_date = "2025-08-03"
+usage_model = "unbound"
+
+[vars]
+# Public variables (will be set via wrangler secret put for sensitive values)
+# GEMINI_API_KEY = "set via wrangler secret put"
+# GOOGLE_MAPS_API_KEY = "set via wrangler secret put"
+# DATABASE_URL = "set via wrangler secret put"
+
+# CORS settings
+CORS_ORIGIN = "*"
+
+# Rate limiting
+MAX_REQUESTS_PER_MINUTE = "60"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "beauty-heatmap"
+database_id = "your-d1-database-id"

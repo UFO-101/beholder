@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Maps API Test</title>
+    <style>
+        #map { height: 400px; width: 100%; }
+        #status { padding: 20px; font-family: Arial; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <div id="status">Loading...</div>
+    <div id="map"></div>
+    
+    <script>
+        const API_KEY = 'AIzaSyBI_ZzYV93bFdOJ_TftCM6e9ufGRtM4JpU';
+        
+        function updateStatus(message, isError = false) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = isError ? 'error' : 'success';
+            console.log(message);
+        }
+        
+        function initMap() {
+            try {
+                updateStatus('Google Maps loaded successfully!');
+                const map = new google.maps.Map(document.getElementById('map'), {
+                    center: { lat: 51.5074, lng: -0.1278 },
+                    zoom: 12
+                });
+                updateStatus('Map initialized successfully!');
+            } catch (error) {
+                updateStatus('Error initializing map: ' + error.message, true);
+            }
+        }
+        
+        function loadMaps() {
+            updateStatus('Loading Google Maps API...');
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${API_KEY}&callback=initMap`;
+            script.async = true;
+            script.defer = true;
+            
+            script.onerror = function() {
+                updateStatus('Failed to load Google Maps API script', true);
+            };
+            
+            document.head.appendChild(script);
+        }
+        
+        // Start loading
+        loadMaps();
+    </script>
+</body>
+</html>

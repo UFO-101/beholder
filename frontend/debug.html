@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Google Maps Debug</title>
+</head>
+<body>
+    <div id="map" style="height: 400px; width: 100%;"></div>
+    
+    <script>
+        function initMap() {
+            console.log('Google Maps loaded successfully');
+            const map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 51.5074, lng: -0.1278 },
+                zoom: 12
+            });
+        }
+        
+        function handleError(error) {
+            console.error('Google Maps loading error:', error);
+        }
+    </script>
+    
+    <script async defer 
+        src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBI_ZzYV93bFdOJ_TftCM6e9ufGRtM4JpU&callback=initMap&libraries=geometry"
+        onerror="handleError('Script loading failed')">
+    </script>
+</body>
+</html>

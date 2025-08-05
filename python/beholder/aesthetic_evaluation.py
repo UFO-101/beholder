@@ -56,7 +56,7 @@ Analyze this Street View image of {address} and provide:
    - 3-4: Lackluster (bland, uninspiring). Eg. Grim housing blocks, dirty steets
    - 5-6: Okay (pleasant but unremarkable). Eg. Unadorned houses, bland modern developments
    - 7-8: Good (attractive, well-designed). Eg. Ornamented houses, greenery, flagstone paths
-   - 9-10: Excellent (beautiful, exquisite, iconic) Eg. Ornate facades, colourful gardens, well composed street scenes
+   - 9-10: Excellent (beautiful, exquisite) Eg. Ornate facades, colourful gardens, well composed street scenes
 
 Be fair and open minded, while maintaining high standards. Don't be afraid to use the full range of the scale.
 
