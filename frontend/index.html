@@ -140,7 +140,7 @@
         <hr>
         <div>
             <label>
-                <input type="checkbox" id="showHeatmap" checked> Show Heatmap
+                <input type="checkbox" id="showHeatmap" checked> Show H3 Hexagons
             </label>
         </div>
         <div>
@@ -186,7 +186,10 @@
         <div>Processing your submission...</div>
     </div>
 
-    <!-- Google Maps API will be loaded dynamically -->
+    <!-- Google Maps API will be loaded dynamically by backend -->
+    
+    <!-- H3 Library - Required for H3HexagonLayer (v3 for deck.gl v8 compatibility) -->
+    <script src="https://unpkg.com/h3-js@^3.0.0"></script>
     
     <!-- Deck.gl - Use confirmed working CDN -->
     <script src="https://unpkg.com/deck.gl@8/dist.min.js"></script>

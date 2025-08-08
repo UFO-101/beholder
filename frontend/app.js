@@ -1,7 +1,6 @@
 // Configuration
 const CONFIG = {
-    // Local development configuration
-    GOOGLE_MAPS_API_KEY: 'AIzaSyBI_ZzYV93bFdOJ_TftCM6e9ufGRtM4JpU',
+    // Local development configuration - no API keys needed in frontend
     API_BASE_URL: 'http://localhost:8787', // Local Cloudflare Worker
     
     // Map settings
@@ -40,22 +39,35 @@ class BeautyHeatmap {
         this.init();
     }
     
-    loadGoogleMaps() {
-        return new Promise((resolve, reject) => {
+    async loadGoogleMaps() {
+        return new Promise(async (resolve, reject) => {
             if (window.google && window.google.maps) {
                 resolve();
                 return;
             }
             
-            const script = document.createElement('script');
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${CONFIG.GOOGLE_MAPS_API_KEY}&libraries=geometry`;
-            script.async = true;
-            script.defer = true;
-            
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error('Failed to load Google Maps'));
-            
-            document.head.appendChild(script);
+            try {
+                // Get Google Maps script URL from backend (which has the API key)
+                const response = await fetch(`${CONFIG.API_BASE_URL}/maps-script`);
+                if (!response.ok) {
+                    throw new Error('Failed to get Maps script URL from backend');
+                }
+                
+                const { scriptUrl } = await response.json();
+                
+                const script = document.createElement('script');
+                script.src = scriptUrl;
+                script.async = true;
+                script.defer = true;
+                
+                script.onload = () => resolve();
+                script.onerror = () => reject(new Error('Failed to load Google Maps'));
+                
+                document.head.appendChild(script);
+                
+            } catch (error) {
+                reject(error);
+            }
         });
     }
     
@@ -114,7 +126,11 @@ class BeautyHeatmap {
             
         } catch (error) {
             console.error('Failed to initialize map:', error);
-            alert('Failed to load map. Please check your API keys and try again.');
+            if (error.message.includes('ExpiredKeyMapError') || error.message.includes('API key')) {
+                alert('Google Maps API key is expired or invalid. Please update the API key in the backend.');
+            } else {
+                alert('Failed to load map. Please check your API keys and try again.');
+            }
         }
     }
     
@@ -173,14 +189,25 @@ class BeautyHeatmap {
             ].join(',');
             
             if (zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD) {
-                // Load heatmap data
-                console.log('Loading heatmap data for zoom', zoom);
-                const response = await fetch(`${CONFIG.API_BASE_URL}/heat?bbox=${bbox}&z=${zoom}`);
-                if (response.ok) {
-                    this.heatData = await response.json();
-                    console.log('Loaded heatmap data:', this.heatData.length, 'items');
+                // Load heatmap data - but only for the zoom ranges where we want to show hexagons
+                const resolution = this.getH3Resolution(zoom);
+                if (resolution !== null) {
+                    console.log('Loading heatmap data for zoom', zoom, 'resolution', resolution);
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/heat?bbox=${bbox}&z=${zoom}`);
+                    if (response.ok) {
+                        this.heatData = await response.json();
+                        console.log('Loaded heatmap data:', this.heatData.length, 'items');
+                        if (this.heatData.length > 0) {
+                            console.log('First hexagon sample:', this.heatData[0]);
+                            console.log('H3 index length (indicates resolution):', this.heatData[0].h3?.length);
+                        }
+                    } else {
+                        console.error('Failed to load heatmap data:', response.status);
+                    }
                 } else {
-                    console.error('Failed to load heatmap data:', response.status);
+                    // Clear heatmap data when we don't want to show hexagons
+                    this.heatData = [];
+                    console.log('Cleared heatmap data - zoom level outside hexagon range');
                 }
             } else {
                 // Load point data
@@ -213,38 +240,62 @@ class BeautyHeatmap {
         console.log('Heat data count:', this.heatData.length, 'Point data count:', this.pointData.length);
         console.log('Show heatmap:', this.showHeatmap, 'Show points:', this.showPoints);
         
-        if (zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0) {
-            // Show heatmap
-            console.log('Creating heatmap layer with', this.heatData.length, 'data points');
-            console.log('Heatmap data sample:', this.heatData[0]);
+        const resolution = this.getH3Resolution(zoom);
+        if (zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0 && resolution !== null) {
+            // Show H3 hexagons
+            console.log('Creating H3 hexagon layer with', this.heatData.length, 'hexagons');
+            console.log('H3 hexagon data sample:', this.heatData[0]);
             
-            let HeatmapLayer;
-            if (window.deck && window.deck.HeatmapLayer) {
-                HeatmapLayer = window.deck.HeatmapLayer;
-            } else if (window.DeckGL && window.DeckGL.HeatmapLayer) {
-                HeatmapLayer = window.DeckGL.HeatmapLayer;
-            } else if (window.HeatmapLayer) {
-                HeatmapLayer = window.HeatmapLayer;
+            let H3HexagonLayer;
+            if (window.deck && window.deck.H3HexagonLayer) {
+                H3HexagonLayer = window.deck.H3HexagonLayer;
+            } else if (window.DeckGL && window.DeckGL.H3HexagonLayer) {
+                H3HexagonLayer = window.DeckGL.H3HexagonLayer;
+            } else if (window.H3HexagonLayer) {
+                H3HexagonLayer = window.H3HexagonLayer;
             } else {
-                console.error('HeatmapLayer not found in global scope');
+                console.error('H3HexagonLayer not found in global scope');
                 return;
             }
             
-            layers.push(new HeatmapLayer({
-                id: 'heatmap',
+            // H3 hexagons should render at their true geographic sizes
+            // The H3 spec defines exact sizes: R7 ~1.22km, R9 ~176m, R13 ~2.4m edge length
+            // resolution is already calculated above and checked for null
+            
+            // Style based on resolution for visibility, but don't artificially scale size
+            let lineWidth, lineOpacity;
+            if (resolution === 7) {
+                // R7 hexagons are naturally large (~1.22km edge) - use thicker lines
+                lineWidth = 2;
+                lineOpacity = 160;
+            } else if (resolution === 9) {
+                // R9 hexagons are medium (~176m edge) - medium lines
+                lineWidth = 1.5;
+                lineOpacity = 130;
+            } else if (resolution === 13) {
+                // R13 hexagons are naturally small (~2.4m edge) - thin lines but more visible
+                lineWidth = 1;
+                lineOpacity = 110;
+            } else {
+                // Fallback
+                lineWidth = 1;
+                lineOpacity = 100;
+            }
+            
+            layers.push(new H3HexagonLayer({
+                id: 'h3-hexagons',
                 data: this.heatData,
-                getPosition: d => [parseFloat(d.lng), parseFloat(d.lat)],
-                getWeight: d => parseFloat(d.avg) || 5,
-                radiusPixels: 80,
-                colorRange: [
-                    [255, 0, 0, 180],      // Red (low beauty)
-                    [255, 128, 0, 180],    // Orange
-                    [255, 255, 0, 180],    // Yellow  
-                    [128, 255, 0, 180],    // Light Green
-                    [0, 255, 0, 180]       // Green (high beauty)
-                ],
-                intensity: 2,
-                threshold: 0.03
+                getHexagon: d => d.h3,
+                getFillColor: d => this.getBeautyHexColor(d.avg),
+                getLineColor: [255, 255, 255, lineOpacity],
+                lineWidthMinPixels: lineWidth,
+                // coverage: 1.0 is default - let H3 hexagons render at true geographic size
+                extruded: false,
+                stroked: true,
+                filled: true,
+                pickable: true,
+                onHover: this.onHexagonHover.bind(this),
+                onClick: this.onHexagonClick.bind(this)
             }));
         }
         
@@ -258,56 +309,114 @@ class BeautyHeatmap {
                 beauty: d.beauty
             })));
             
-            let ScatterplotLayer;
-            if (window.deck && window.deck.ScatterplotLayer) {
-                ScatterplotLayer = window.deck.ScatterplotLayer;
-            } else if (window.DeckGL && window.DeckGL.ScatterplotLayer) {
-                ScatterplotLayer = window.DeckGL.ScatterplotLayer;
-            } else if (window.ScatterplotLayer) {
-                ScatterplotLayer = window.ScatterplotLayer;
+            // Get required layer classes
+            let IconLayer, TextLayer, CompositeLayer;
+            if (window.deck && window.deck.IconLayer) {
+                IconLayer = window.deck.IconLayer;
+                TextLayer = window.deck.TextLayer;
+                CompositeLayer = window.deck.CompositeLayer;
+            } else if (window.DeckGL) {
+                IconLayer = window.DeckGL.IconLayer;
+                TextLayer = window.DeckGL.TextLayer;
+                CompositeLayer = window.DeckGL.CompositeLayer;
             } else {
-                console.error('ScatterplotLayer not found in global scope');
+                console.error('Required deck.gl layers not found in global scope');
                 return;
             }
             
-            // Add scatter plot layer for points
-            layers.push(new ScatterplotLayer({
-                id: 'points',
+            // Create composite layer class for labelled icons
+            class LabelledIconLayer extends CompositeLayer {
+                renderLayers() {
+                    const {data, getColor, getPosition, getText} = this.props;
+                    return [
+                        new IconLayer({
+                            id: `${this.id}-icons`,
+                            data,
+                            getPosition,
+                            getIcon: () => 'marker',
+                            getColor,
+                            sizeUnits: 'pixels',
+                            sizeMinPixels: 32,
+                            sizeMaxPixels: 32,
+                            iconAtlas: this.getIconAtlas(),
+                            iconMapping: this.getIconMapping(),
+                            pickable: true
+                        }),
+                        new TextLayer({
+                            id: `${this.id}-text`,
+                            data,
+                            getPosition,
+                            getText,
+                            getColor: [255, 255, 255, 255],
+                            fontSize: 12,
+                            fontWeight: 'bold',
+                            textAnchor: 'middle',
+                            alignmentBaseline: 'center',
+                            billboard: true,
+                            pickable: false,
+                            outlineWidth: 2,
+                            outlineColor: [0, 0, 0, 255]
+                        })
+                    ];
+                }
+                
+                getIconAtlas() {
+                    // Create a simple location pin icon
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 64;
+                    canvas.height = 64;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Clear canvas
+                    ctx.clearRect(0, 0, 64, 64);
+                    
+                    // Draw location pin shape
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.strokeStyle = '#333333';
+                    ctx.lineWidth = 2;
+                    
+                    // Pin body (teardrop shape)
+                    ctx.beginPath();
+                    ctx.arc(32, 28, 18, 0, 2 * Math.PI);
+                    ctx.fill();
+                    ctx.stroke();
+                    
+                    // Pin point
+                    ctx.beginPath();
+                    ctx.moveTo(32, 46);
+                    ctx.lineTo(24, 38);
+                    ctx.lineTo(40, 38);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                    
+                    // Inner circle
+                    ctx.fillStyle = '#666666';
+                    ctx.beginPath();
+                    ctx.arc(32, 28, 8, 0, 2 * Math.PI);
+                    ctx.fill();
+                    
+                    return canvas.toDataURL();
+                }
+                
+                getIconMapping() {
+                    return {
+                        marker: { x: 0, y: 0, width: 64, height: 64, anchorY: 64 }
+                    };
+                }
+            }
+            
+            // Add labelled icon layer for points
+            layers.push(new LabelledIconLayer({
+                id: 'beauty-points',
                 data: this.pointData,
                 getPosition: d => [parseFloat(d.lng), parseFloat(d.lat)],
-                getRadius: 15,
-                getFillColor: d => this.getBeautyColor(d.beauty),
-                getLineColor: [255, 255, 255, 200],
-                getLineWidth: 2,
-                stroked: true,
-                filled: true,
+                getColor: d => this.getBeautyIconColor(d.beauty),
+                getText: d => parseFloat(d.beauty).toFixed(1),
                 pickable: true,
                 onHover: this.onPointHover.bind(this),
                 onClick: this.onPointClick.bind(this)
             }));
-            
-            // Add text layer to display beauty scores on points
-            let TextLayer;
-            if (window.deck && window.deck.TextLayer) {
-                TextLayer = window.deck.TextLayer;
-                
-                layers.push(new TextLayer({
-                    id: 'point-labels',
-                    data: this.pointData,
-                    getPosition: d => [parseFloat(d.lng), parseFloat(d.lat)],
-                    getText: d => parseFloat(d.beauty).toFixed(1),
-                    getSize: 14,
-                    getColor: [255, 255, 255, 255],
-                    getAngle: 0,
-                    getTextAnchor: 'middle',
-                    getAlignmentBaseline: 'center',
-                    fontFamily: 'Arial, sans-serif',
-                    fontWeight: 'bold',
-                    outlineWidth: 2,
-                    outlineColor: [0, 0, 0, 255],
-                    pickable: false
-                }));
-            }
         }
         
         console.log('Setting', layers.length, 'layers on overlay');
@@ -322,11 +431,24 @@ class BeautyHeatmap {
         let modeColor = '#666';
         
         if (zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD) {
-            if (this.showHeatmap && this.heatData.length > 0) {
-                mode = 'Heatmap';
-                modeColor = '#ff6b35'; // Orange for heatmap
+            const resolution = this.getH3Resolution(zoom);
+            if (resolution === null) {
+                mode = 'No Hexagons (Zoom < 9)';
+                modeColor = '#666';
+            } else if (this.showHeatmap && this.heatData.length > 0) {
+                // Determine actual resolution from the data
+                const firstHex = this.heatData[0];
+                let actualResolution = 'Unknown';
+                if (firstHex && firstHex.h3) {
+                    // Backend now returns correct resolution based on zoom ranges
+                    if (zoom >= 9 && zoom <= 12) actualResolution = 'R7 (Large)';
+                    else if (zoom >= 13 && zoom <= 15) actualResolution = 'R9 (Medium)';
+                    else actualResolution = 'Unknown';
+                }
+                mode = `H3 Hexagons ${actualResolution}`;
+                modeColor = '#ff6b35'; // Orange for hexagons
             } else {
-                mode = 'Heatmap (No Data)';
+                mode = 'Hexagons (No Data)';
                 modeColor = '#999';
             }
         } else {
@@ -340,7 +462,7 @@ class BeautyHeatmap {
         }
         
         zoomInfoElement.innerHTML = `
-            <div>Zoom: ${zoom.toFixed(1)} | Threshold: &lt;${CONFIG.HEATMAP_ZOOM_THRESHOLD}</div>
+            <div>Zoom: ${(zoom || 0).toFixed(1)} | Threshold: &lt;${CONFIG.HEATMAP_ZOOM_THRESHOLD}</div>
             <div style="color: ${modeColor}">Mode: ${mode}</div>
             <div style="font-size: 11px; opacity: 0.8;">Heat: ${this.heatData.length} | Points: ${this.pointData.length}</div>
         `;
@@ -349,6 +471,96 @@ class BeautyHeatmap {
     getBeautyColor(beauty) {
         const score = Math.round(Math.max(1, Math.min(10, beauty || 5)));
         return CONFIG.BEAUTY_COLORS[score] || [128, 128, 128, 180];
+    }
+    
+    getBeautyIconColor(beauty) {
+        const score = Math.max(1, Math.min(10, beauty || 5));
+        
+        // Return bright RGB colors for IconLayer
+        if (score <= 2) {
+            return [255, 51, 51]; // Bright Red
+        } else if (score <= 4) {
+            return [255, 136, 0]; // Bright Orange
+        } else if (score <= 6) {
+            return [255, 221, 0]; // Bright Yellow
+        } else if (score <= 8) {
+            return [136, 255, 0]; // Bright Light Green
+        } else {
+            return [0, 255, 68]; // Bright Green
+        }
+    }
+    
+    getBeautyHexColor(avgBeauty) {
+        // Handle empty hexagons (make them transparent)
+        if (!avgBeauty || avgBeauty === 0) {
+            return [128, 128, 128, 30]; // Very transparent gray
+        }
+        
+        // Color based on beauty score (1-10 scale)
+        const normalized = Math.max(1, Math.min(10, avgBeauty)) / 10; // 0.1 to 1.0
+        
+        if (normalized <= 0.2) {
+            // 1-2: Red (bad)
+            return [255, 0, 0, 150];
+        } else if (normalized <= 0.4) {
+            // 3-4: Orange (lackluster)
+            return [255, 128, 0, 150];
+        } else if (normalized <= 0.6) {
+            // 5-6: Yellow (okay)
+            return [255, 255, 0, 150];
+        } else if (normalized <= 0.8) {
+            // 7-8: Light Green (good)
+            return [128, 255, 0, 150];
+        } else {
+            // 9-10: Green (excellent)
+            return [0, 255, 0, 150];
+        }
+    }
+    
+    getH3Resolution(zoom) {
+        if (zoom < 9) return null;               // Below zoom 9: no hexagons
+        if (zoom >= 9 && zoom <= 12) return 7;  // Large R7 hexagons
+        if (zoom >= 13 && zoom <= 15) return 9; // Medium R9 hexagons (now includes zoom 15)
+        return null; // Zoom 16+ will show individual points
+    }
+    
+    onHexagonHover(info) {
+        if (info.object) {
+            // You could show hexagon info on hover if needed
+            // console.log('Hexagon hovered:', info.object);
+        }
+    }
+    
+    onHexagonClick(info) {
+        if (info.object) {
+            const hexData = info.object;
+            const avgBeauty = parseFloat(hexData.avg || 0);
+            const scoreColor = avgBeauty >= 7 ? '#4CAF50' : avgBeauty >= 5 ? '#FF9800' : '#F44336';
+            
+            const content = `
+                <div style="max-width: 280px; font-family: Arial, sans-serif;">
+                    <div style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <h3 style="margin: 0; color: ${scoreColor};">Area Average: ${avgBeauty.toFixed(1)}/10</h3>
+                    </div>
+                    <p style="margin: 5px 0;"><strong>🔷 Hexagon:</strong> ${hexData.h3}</p>
+                    <div style="background: #f5f5f5; padding: 10px; border-radius: 5px; margin: 10px 0;">
+                        <strong>📊 Statistics:</strong><br>
+                        <em>This hexagon represents the average beauty score of multiple locations in this area</em>
+                    </div>
+                    <p style="margin: 5px 0; font-size: 12px; color: #666;">
+                        <strong>🎯 Resolution:</strong> H3 Level ${this.getH3Resolution(this.map.getZoom())}<br>
+                        <strong>🗺️ Zoom to see individual points</strong>
+                    </p>
+                </div>
+            `;
+            
+            const infoWindow = new google.maps.InfoWindow({
+                content: content,
+                position: { lat: parseFloat(hexData.lat), lng: parseFloat(hexData.lng) }
+            });
+            
+            infoWindow.open(this.map);
+        }
     }
     
     onPointHover(info) {

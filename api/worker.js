@@ -228,6 +228,16 @@ export default {
         ));
       }
 
+      // GET /maps-script - Get Google Maps script URL (keeps API key secure)
+      if (request.method === 'GET' && url.pathname === '/maps-script') {
+        const scriptUrl = `https://maps.googleapis.com/maps/api/js?key=${env.GOOGLE_MAPS_API_KEY}&libraries=geometry`;
+        
+        return corsResponse(new Response(
+          JSON.stringify({ scriptUrl }),
+          { headers: { 'Content-Type': 'application/json' } }
+        ));
+      }
+
       // GET /stats - Get overall statistics
       if (request.method === 'GET' && url.pathname === '/stats') {
         const query = `
