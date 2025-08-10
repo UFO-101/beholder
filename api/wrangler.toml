@@ -1,7 +1,6 @@
 name = "beauty-api"
 main = "worker.js"
 compatibility_date = "2025-08-03"
-usage_model = "unbound"
 
 [vars]
 # Public variables (will be set via wrangler secret put for sensitive values)

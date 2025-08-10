@@ -35,6 +35,10 @@ class BeautyHeatmap {
         this.pointData = [];
         this.showHeatmap = true;
         this.showPoints = true;
+        this.iconCache = new Map();
+        this.pinAtlasUrl = null;
+        this.pinAtlasMapping = null;
+        this.externalPinSvg = null;
         
         this.init();
     }
@@ -82,6 +86,9 @@ class BeautyHeatmap {
             this.map = new google.maps.Map(document.getElementById('map'), {
                 center: CONFIG.INITIAL_CENTER,
                 zoom: CONFIG.INITIAL_ZOOM,
+                clickableIcons: false, // Prevent Google POIs from stealing clicks behind our overlay
+                draggableCursor: 'default', // Override Google Maps default draggable cursor
+                draggingCursor: 'grabbing', // Keep grabbing cursor when actually dragging
                 styles: [
                     {
                         featureType: 'all',
@@ -90,6 +97,9 @@ class BeautyHeatmap {
                     }
                 ]
             });
+            
+            console.log('🗺️ Map initialized with draggableCursor: default');
+            console.log('🗺️ Map div cursor:', this.map.getDiv().style.cursor);
             
             // Initialize deck.gl overlay - try different global patterns
             let GoogleMapsOverlay;
@@ -104,7 +114,22 @@ class BeautyHeatmap {
             }
             
             this.overlay = new GoogleMapsOverlay({
-                interleaved: true
+                interleaved: true,
+                getCursor: ({ isHovering, isDragging }) => {
+                    // Use Google Maps setOptions to control cursor for GoogleMapsOverlay
+                    if (isHovering) {
+                        this.map.setOptions({ draggableCursor: "pointer" });
+                    } else {
+                        this.map.setOptions({ draggableCursor: "default" });
+                    }
+                    
+                    const cursor = isDragging ? 'grabbing' : (isHovering ? 'pointer' : 'default');
+                    if (this.lastCursorState !== cursor) {
+                        console.log('🎯 Cursor changing to:', cursor, { isHovering, isDragging });
+                        this.lastCursorState = cursor;
+                    }
+                    return cursor;
+                }
             });
             this.overlay.setMap(this.map);
             
@@ -113,6 +138,9 @@ class BeautyHeatmap {
             // deck.gl is loaded and working
             // Set up event listeners
             this.setupEventListeners();
+
+            // Attach Places Autocomplete to the address input
+            this.setupAutocomplete();
             
             console.log('Loading initial data...');
             // Load initial data
@@ -133,10 +161,51 @@ class BeautyHeatmap {
             }
         }
     }
+    setupAutocomplete() {
+        const input = document.getElementById('addressInput');
+        if (!window.google || !google.maps.places) return;
+        const autocomplete = new google.maps.places.Autocomplete(input, {
+            fields: ['formatted_address', 'geometry', 'place_id'],
+            componentRestrictions: { country: 'gb' },
+            types: ['geocode']
+        });
+        autocomplete.addListener('place_changed', () => {
+            const place = autocomplete.getPlace();
+            if (place && place.geometry && place.geometry.location) {
+                this.map.panTo(place.geometry.location);
+                this.map.setZoom(16);
+            }
+        });
+    }
     
     setupEventListeners() {
         // Map events
         this.map.addListener('idle', () => this.refreshData());
+        // Close open info window when clicking on the map background
+        this.map.addListener('click', () => {
+            if (this.suppressNextMapClickClose) {
+                // Ignore the map click that follows a marker click
+                this.suppressNextMapClickClose = false;
+                return;
+            }
+            if (this.infoWindow) this.infoWindow.close();
+        });
+        
+        // Also close when clicking anywhere outside the InfoWindow (captures focus-first clicks)
+        if (!this.boundDocumentPointerDown) {
+            this.boundDocumentPointerDown = (ev) => {
+                if (!this.infoWindow) return;
+                const wrapper = document.getElementById('bh-iw');
+                if (wrapper) {
+                    const inPopup = (ev.target === wrapper) ||
+                        (typeof ev.composedPath === 'function' && ev.composedPath().includes(wrapper)) ||
+                        (ev.target.closest && ev.target.closest('#bh-iw'));
+                    if (inPopup) return; // Click inside popup; don't close
+                }
+                this.infoWindow.close();
+            };
+            document.addEventListener('pointerdown', this.boundDocumentPointerDown, true);
+        }
         
         // Control events
         document.getElementById('addPointBtn').addEventListener('click', () => this.addPoint());
@@ -151,9 +220,6 @@ class BeautyHeatmap {
         
         // Allow Enter key to submit
         document.getElementById('addressInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.addPoint();
-        });
-        document.getElementById('imageInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.addPoint();
         });
     }
@@ -228,13 +294,14 @@ class BeautyHeatmap {
         }
     }
     
-    updateVisualization() {
+    async updateVisualization() {
         console.log('updateVisualization called');
         const layers = [];
         const zoom = this.map.getZoom();
         
         // Update zoom info display
         this.updateZoomInfo(zoom);
+        // Cursor is managed by deck.gl getCursor function
         
         console.log('Current zoom:', zoom, 'Heatmap threshold:', CONFIG.HEATMAP_ZOOM_THRESHOLD);
         console.log('Heat data count:', this.heatData.length, 'Point data count:', this.pointData.length);
@@ -300,122 +367,67 @@ class BeautyHeatmap {
         }
         
         if (zoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showPoints && this.pointData.length > 0) {
-            // Show individual points
-            console.log('Creating scatterplot layer with', this.pointData.length, 'data points');
-            console.log('Point data sample:', this.pointData[0]);
-            console.log('Point positions:', this.pointData.map(d => ({
-                address: d.address,
-                position: [parseFloat(d.lng), parseFloat(d.lat)],
-                beauty: d.beauty
-            })));
-            
-            // Get required layer classes
-            let IconLayer, TextLayer, CompositeLayer;
+            // Show individual points as large, crisp pins with readable labels
+            let IconLayer, TextLayer;
             if (window.deck && window.deck.IconLayer) {
                 IconLayer = window.deck.IconLayer;
                 TextLayer = window.deck.TextLayer;
-                CompositeLayer = window.deck.CompositeLayer;
             } else if (window.DeckGL) {
                 IconLayer = window.DeckGL.IconLayer;
                 TextLayer = window.DeckGL.TextLayer;
-                CompositeLayer = window.DeckGL.CompositeLayer;
             } else {
                 console.error('Required deck.gl layers not found in global scope');
                 return;
             }
-            
-            // Create composite layer class for labelled icons
-            class LabelledIconLayer extends CompositeLayer {
-                renderLayers() {
-                    const {data, getColor, getPosition, getText} = this.props;
-                    return [
-                        new IconLayer({
-                            id: `${this.id}-icons`,
-                            data,
-                            getPosition,
-                            getIcon: () => 'marker',
-                            getColor,
-                            sizeUnits: 'pixels',
-                            sizeMinPixels: 32,
-                            sizeMaxPixels: 32,
-                            iconAtlas: this.getIconAtlas(),
-                            iconMapping: this.getIconMapping(),
-                            pickable: true
-                        }),
-                        new TextLayer({
-                            id: `${this.id}-text`,
-                            data,
-                            getPosition,
-                            getText,
-                            getColor: [255, 255, 255, 255],
-                            fontSize: 12,
-                            fontWeight: 'bold',
-                            textAnchor: 'middle',
-                            alignmentBaseline: 'center',
-                            billboard: true,
-                            pickable: false,
-                            outlineWidth: 2,
-                            outlineColor: [0, 0, 0, 255]
-                        })
-                    ];
-                }
-                
-                getIconAtlas() {
-                    // Create a simple location pin icon
-                    const canvas = document.createElement('canvas');
-                    canvas.width = 64;
-                    canvas.height = 64;
-                    const ctx = canvas.getContext('2d');
-                    
-                    // Clear canvas
-                    ctx.clearRect(0, 0, 64, 64);
-                    
-                    // Draw location pin shape
-                    ctx.fillStyle = '#FFFFFF';
-                    ctx.strokeStyle = '#333333';
-                    ctx.lineWidth = 2;
-                    
-                    // Pin body (teardrop shape)
-                    ctx.beginPath();
-                    ctx.arc(32, 28, 18, 0, 2 * Math.PI);
-                    ctx.fill();
-                    ctx.stroke();
-                    
-                    // Pin point
-                    ctx.beginPath();
-                    ctx.moveTo(32, 46);
-                    ctx.lineTo(24, 38);
-                    ctx.lineTo(40, 38);
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.stroke();
-                    
-                    // Inner circle
-                    ctx.fillStyle = '#666666';
-                    ctx.beginPath();
-                    ctx.arc(32, 28, 8, 0, 2 * Math.PI);
-                    ctx.fill();
-                    
-                    return canvas.toDataURL();
-                }
-                
-                getIconMapping() {
-                    return {
-                        marker: { x: 0, y: 0, width: 64, height: 64, anchorY: 64 }
-                    };
-                }
-            }
-            
-            // Add labelled icon layer for points
-            layers.push(new LabelledIconLayer({
-                id: 'beauty-points',
+
+            const getPosition = d => [parseFloat(d.lng), parseFloat(d.lat)];
+
+            // Load external SVG icon once and recolor per score
+            await this.ensureExternalPin();
+
+            // Pin icons (anchor at tip) from a sprite atlas for crisp rendering
+            layers.push(new IconLayer({
+                id: 'beauty-pins',
                 data: this.pointData,
-                getPosition: d => [parseFloat(d.lng), parseFloat(d.lat)],
-                getColor: d => this.getBeautyIconColor(d.beauty),
-                getText: d => parseFloat(d.beauty).toFixed(1),
+                getPosition,
+                // Use per-point SVG URL derived from the external base SVG and score color
+                getIcon: d => ({
+                    url: this.getExternalPinForScore(d.beauty),
+                    width: 1024,
+                    height: 1024,
+                    anchorY: 1024
+                }),
+                sizeUnits: 'pixels',
+                getSize: 64,
+                sizeMinPixels: 56,
+                sizeMaxPixels: 72,
                 pickable: true,
+                pickingRadius: 12, // Make picking a bit more forgiving
+                parameters: { depthTest: false }, // Ensure pins render and pick above anything else
                 onHover: this.onPointHover.bind(this),
                 onClick: this.onPointClick.bind(this)
+            }));
+
+            // Score label centered inside the pin head
+            layers.push(new TextLayer({
+                id: 'beauty-pin-labels',
+                data: this.pointData,
+                getPosition,
+                getText: d => `${Math.round(parseFloat(d.beauty))}`,
+                getColor: [255, 255, 255, 255],
+                getSize: 18,
+                sizeUnits: 'pixels',
+                sizeMinPixels: 18,
+                sizeMaxPixels: 18,
+                textAnchor: 'middle',
+                alignmentBaseline: 'center',
+                billboard: true,
+                fontFamily: 'Arial Black, Arial, sans-serif',
+                // No outline/background for a clean look
+                fontSettings: { sdf: false },
+                getPixelOffset: [0, -24],
+                pickable: false, // Avoid text intercepting clicks; let icons handle picking
+                parameters: { depthTest: false }
             }));
         }
         
@@ -477,17 +489,11 @@ class BeautyHeatmap {
         const score = Math.max(1, Math.min(10, beauty || 5));
         
         // Return bright RGB colors for IconLayer
-        if (score <= 2) {
-            return [255, 51, 51]; // Bright Red
-        } else if (score <= 4) {
-            return [255, 136, 0]; // Bright Orange
-        } else if (score <= 6) {
-            return [255, 221, 0]; // Bright Yellow
-        } else if (score <= 8) {
-            return [136, 255, 0]; // Bright Light Green
-        } else {
-            return [0, 255, 68]; // Bright Green
-        }
+        if (score <= 2) return [255, 51, 51];
+        if (score <= 4) return [255, 136, 0];
+        if (score <= 6) return [255, 221, 0];
+        if (score <= 8) return [136, 255, 0];
+        return [0, 255, 68];
     }
     
     getBeautyHexColor(avgBeauty) {
@@ -522,6 +528,119 @@ class BeautyHeatmap {
         if (zoom >= 9 && zoom <= 12) return 7;  // Large R7 hexagons
         if (zoom >= 13 && zoom <= 15) return 9; // Medium R9 hexagons (now includes zoom 15)
         return null; // Zoom 16+ will show individual points
+    }
+
+    // Create or reuse a colorized SVG pin for a rounded score bucket
+    getMarkerIcon(beauty) {
+        const rounded = Math.max(1, Math.min(10, Math.round(beauty || 5)));
+        if (this.iconCache.has(rounded)) return this.iconCache.get(rounded);
+
+        const [r, g, b] = this.getBeautyIconColor(rounded);
+        const fill = `rgb(${r},${g},${b})`;
+
+        // High-contrast pin with white inner highlight and dark stroke
+        const svg = `data:image/svg+xml;utf8,
+<svg xmlns='http://www.w3.org/2000/svg' width='48' height='64' viewBox='0 0 48 64'>
+  <defs>
+    <filter id='shadow' x='-20%' y='-20%' width='140%' height='140%'>
+      <feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='rgba(0,0,0,0.35)'/>
+    </filter>
+  </defs>
+  <g filter='url(#shadow)'>
+    <path d='M24 2c-9.94 0-18 8.06-18 18 0 12.5 18 36 18 36s18-23.5 18-36C42 10.06 33.94 2 24 2z' fill='${fill}' stroke='rgba(0,0,0,0.6)' stroke-width='2'/>
+    <circle cx='24' cy='22' r='9' fill='white' fill-opacity='0.95'/>
+  </g>
+</svg>`;
+
+        this.iconCache.set(rounded, svg);
+        return svg;
+    }
+
+    // Build a small sprite atlas with 10 color-coded pins once
+    ensurePinAtlas() {
+        if (this.pinAtlasUrl && this.pinAtlasMapping) return;
+
+        const canvas = document.createElement('canvas');
+        const cols = 5;
+        const rows = 2;
+        const cellW = 48;
+        const cellH = 64;
+        canvas.width = cols * cellW;
+        canvas.height = rows * cellH;
+        const ctx = canvas.getContext('2d');
+
+        const drawPin = (x, y, fill) => {
+            ctx.save();
+            ctx.translate(x + cellW / 2, y);
+            // Shadow
+            ctx.shadowColor = 'rgba(0,0,0,0.35)';
+            ctx.shadowBlur = 6;
+            ctx.shadowOffsetY = 2;
+            // Body
+            ctx.beginPath();
+            // simple rounded pin path
+            ctx.moveTo(0, 6);
+            ctx.arc(0, 22, 18, Math.PI, 0);
+            ctx.lineTo(12, 46);
+            ctx.lineTo(0, 64);
+            ctx.lineTo(-12, 46);
+            ctx.closePath();
+            ctx.fillStyle = fill;
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+            ctx.stroke();
+            // Subtle glossy highlight at top (very low alpha)
+            /*
+            ctx.beginPath();
+            ctx.ellipse(0, 16, 10, 6, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.fill();
+            */
+            ctx.restore();
+        };
+
+        const colors = (score) => {
+            const [r, g, b] = this.getBeautyIconColor(score);
+            return `rgb(${r},${g},${b})`;
+        };
+
+        this.pinAtlasMapping = {};
+        for (let s = 1; s <= 10; s++) {
+            const idx = s - 1;
+            const col = idx % cols;
+            const row = Math.floor(idx / cols);
+            const x = col * cellW;
+            const y = row * cellH;
+            drawPin(x, y, colors(s));
+            this.pinAtlasMapping[`s${s}`] = { x, y, width: cellW, height: cellH, anchorY: cellH };
+        }
+
+        this.pinAtlasUrl = canvas.toDataURL();
+    }
+
+    async ensureExternalPin() {
+        if (this.externalPinSvg) return;
+        // Fetch the SVG from project root via relative path from frontend
+        const resp = await fetch('./assets/location.svg');
+        if (!resp.ok) throw new Error('Failed to load external pin SVG');
+        this.externalPinSvg = await resp.text();
+    }
+
+    getExternalPinForScore(beauty) {
+        const rounded = Math.max(1, Math.min(10, Math.round(beauty || 5)));
+        const cacheKey = `ext_${rounded}`;
+        if (this.iconCache.has(cacheKey)) return this.iconCache.get(cacheKey);
+        const [r, g, b] = this.getBeautyIconColor(rounded);
+        const color = `rgb(${r},${g},${b})`;
+        // Replace currentColor in the SVG with the desired fill color and remove stroke for crisp edges
+        const colored = this.externalPinSvg
+            .replace(/currentColor/gi, color)
+            .replace(/stroke=".*?"/gi, '')
+            .replace(/stroke-width=".*?"/gi, '');
+        const url = `data:image/svg+xml;utf8,${encodeURIComponent(colored)}`;
+        this.iconCache.set(cacheKey, url);
+        return url;
     }
     
     onHexagonHover(info) {
@@ -563,11 +682,14 @@ class BeautyHeatmap {
         }
     }
     
-    onPointHover(info) {
-        if (info.object) {
-            // You could show a tooltip here if needed
-            // console.log('Hovered:', info.object);
-        }
+    onPointHover(info, event) {
+        console.log('🎯 onPointHover called:', {
+            hasInfo: !!info,
+            hasObject: !!(info && info.object)
+        });
+        
+        // Let deck.gl handle the cursor via getCursor function
+        // This method can be used for other hover effects if needed
     }
     
     onPointClick(info) {
@@ -575,31 +697,73 @@ class BeautyHeatmap {
             const point = info.object;
             const beautyScore = parseFloat(point.beauty);
             const scoreColor = beautyScore >= 7 ? '#4CAF50' : beautyScore >= 5 ? '#FF9800' : '#F44336';
+            // Prevent immediate close from the subsequent map click event
+            this.suppressNextMapClickClose = true;
             
             const content = `
-                <div style="max-width: 320px; font-family: Arial, sans-serif;">
-                    <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                        <h3 style="margin: 0; color: ${scoreColor};">Beauty Score: ${beautyScore}/10</h3>
+                <div id="bh-iw" tabindex="-1" style="max-width: 380px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 8px 0;">
+                        <div style="display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 9999px; background: ${scoreColor}; color: #fff; font-weight: 800; font-size: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); letter-spacing: 0.2px;">
+                            ${beautyScore}/10
+                        </div>
+                        <button id="bh-close" type="button" aria-label="Close" 
+                            style="flex:0 0 auto; width:28px; height:28px; border:none; border-radius:14px; background: rgba(0,0,0,0.05); color:#333; font-size:18px; line-height:28px; text-align:center; cursor:pointer;">
+                            ×
+                        </button>
                     </div>
-                    <p style="margin: 5px 0;"><strong>📍 Address:</strong> ${point.address}</p>
-                    <div style="background: #f5f5f5; padding: 10px; border-radius: 5px; margin: 10px 0;">
-                        <strong>💭 AI Review:</strong><br>
-                        <em>"${point.description || 'No review available'}"</em>
+                    <div style="margin: 2px 0 10px 0; color: #1f1f1f; font-size: 14px; line-height: 1.35;">${point.address}</div>
+                    <div style="background: #fafafa; border: 1px solid #eee; padding: 12px; border-radius: 10px; margin: 10px 0 6px 0;">
+                        <div style="font-weight: 600; margin-bottom: 6px; color: #222;">AI Review</div>
+                        <div style="font-style: italic; color: #333; font-size: 14px; line-height: 1.45;">"${point.description || 'No review available'}"</div>
                     </div>
-                    <p style="margin: 5px 0; font-size: 12px; color: #666;">
-                        <strong>🔍 Model:</strong> ${point.model_version || 'Unknown'}<br>
-                        <strong>📅 Added:</strong> ${point.created_at ? new Date(point.created_at).toLocaleDateString() : 'Unknown'}
-                    </p>
-                    ${point.image_url ? `<img src="${point.image_url}" style="width: 100%; margin-top: 10px; border-radius: 5px;">` : ''}
+                    ${point.image_url ? `
+                        <a href="${point.image_url}" target="_blank" rel="noopener noreferrer" style="display: block; margin-top: 4px; text-decoration: none;">
+                            <div style="width: 85%; margin: 0 auto; aspect-ratio: 1 / 1; border-radius: 10px; background: linear-gradient(90deg, #eee 25%, #f5f5f5 37%, #eee 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; position: relative; overflow: hidden;">
+                                <img src="${point.image_url}" alt="Location image" loading="lazy"
+                                     onload="this.style.opacity=1; this.parentElement.style.animation='none'; this.parentElement.style.background='transparent';"
+                                     style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 10px; opacity: 0; transition: opacity 200ms ease;">
+                            </div>
+                        </a>` : ''}
+                    <div style="margin-top: 10px; display: flex; justify-content: space-between; font-size: 12px; color: #666;">
+                        <span>${point.model_version || 'Unknown model'}</span>
+                        <span>${point.created_at ? new Date(point.created_at).toLocaleDateString() : 'Unknown date'}</span>
+                    </div>
+                    <style>
+                        @keyframes shimmer {
+                            0% { background-position: 100% 0; }
+                            100% { background-position: -100% 0; }
+                        }
+                        /* Hide default Google InfoWindow close so our button is the only X */
+                        .gm-ui-hover-effect { display: none !important; }
+                        #bh-iw #bh-close:hover { background: rgba(0,0,0,0.12); }
+                        #bh-iw:focus { outline: none; }
+                    </style>
                 </div>
             `;
             
-            const infoWindow = new google.maps.InfoWindow({
-                content: content,
-                position: { lat: parseFloat(point.lat), lng: parseFloat(point.lng) }
+            // Close any open info windows and open a single one per map
+            if (!this.infoWindow) {
+                this.infoWindow = new google.maps.InfoWindow();
+            }
+            this.infoWindow.setContent(content);
+            this.infoWindow.setPosition({ lat: parseFloat(point.lat), lng: parseFloat(point.lng) });
+            this.infoWindow.open(this.map);
+            // Wire up custom close button after content is in the DOM
+            google.maps.event.addListenerOnce(this.infoWindow, 'domready', () => {
+                const btn = document.getElementById('bh-close');
+                if (btn) {
+                    btn.addEventListener('click', () => this.infoWindow.close());
+                }
+                // Move focus away from close button to the popup container
+                const iw = document.getElementById('bh-iw');
+                if (iw) {
+                    // In case the X was auto-focused, blur it, then focus the container
+                    if (document.activeElement && document.activeElement !== document.body && document.activeElement.blur) {
+                        document.activeElement.blur();
+                    }
+                    iw.focus({ preventScroll: true });
+                }
             });
-            
-            infoWindow.open(this.map);
         }
     }
     
@@ -607,14 +771,12 @@ class BeautyHeatmap {
         console.log('Add point button clicked!');
         
         const addressInput = document.getElementById('addressInput');
-        const imageInput = document.getElementById('imageInput');
         const loading = document.getElementById('loading');
         const button = document.getElementById('addPointBtn');
         
         const address = addressInput.value.trim();
-        const imageUrl = imageInput.value.trim();
         
-        console.log('Address:', address, 'ImageURL:', imageUrl);
+        console.log('Address:', address);
         
         if (!address) {
             alert('Please enter a London address');
@@ -623,47 +785,65 @@ class BeautyHeatmap {
         
         try {
             // Show loading
-            loading.style.display = 'block';
+            const spinner = document.getElementById('addressSpinner');
+            if (spinner) spinner.style.display = 'inline-block';
             button.disabled = true;
             
             const payload = { address: address };
-            if (imageUrl) {
-                payload.imageUrl = imageUrl;
-            }
             
-            // TEMPORARY: Add precomputed values to bypass AI evaluation issues
-            payload.precomputedBeauty = 7.5;
-            payload.precomputedReview = "Beautiful London location (temp review for testing)";
+            // Use real AI evaluation on the server (no precomputed values)
             
             console.log('Making API request to:', `${CONFIG.API_BASE_URL}/point`);
             console.log('Payload:', payload);
             
+            // Optimistically fly to the typed address while the server processes
+            try {
+                const geocoder = new google.maps.Geocoder();
+                geocoder.geocode({ address, componentRestrictions: { country: 'GB' } }, (results, status) => {
+                    if (status === 'OK' && results && results[0]) {
+                        const loc = results[0].geometry.location;
+                        this.map.panTo(loc);
+                        this.map.setZoom(16);
+                    }
+                });
+            } catch (_) {}
+
+            // Add a client-side timeout so the UI doesn't hang forever
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+
             const response = await fetch(`${CONFIG.API_BASE_URL}/point`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
             
             if (response.ok) {
                 const result = await response.json();
                 
-                // Clear inputs
+                // Clear input
                 addressInput.value = '';
-                imageInput.value = '';
                 
-                // Refresh data
+                // Fly to inputted address immediately (optimistic UX) and then to final point location
+                if (result.point) {
+                    const target = { lat: parseFloat(result.point.lat), lng: parseFloat(result.point.lng) };
+                    this.map.panTo(target);
+                    this.map.setZoom(16);
+                }
+
+                // Refresh data and open the info window for this new point
                 await this.refreshData();
                 await this.loadStats();
-                
-                // Center map on new point
+
                 if (result.point) {
-                    this.map.setCenter({ lat: result.point.lat, lng: result.point.lng });
-                    this.map.setZoom(16); // Zoom in to see the point
+                    const newPoint = result.point;
+                    // Open single info window for the new point
+                    this.onPointClick({ object: newPoint });
                 }
-                
-                alert(`Point added successfully! Beauty score: ${result.point.beauty}/10`);
                 
             } else {
                 const error = await response.json();
@@ -675,7 +855,8 @@ class BeautyHeatmap {
             alert(`Failed to add point: ${error.message}`);
         } finally {
             // Hide loading
-            loading.style.display = 'none';
+            const spinner = document.getElementById('addressSpinner');
+            if (spinner) spinner.style.display = 'none';
             button.disabled = false;
         }
     }

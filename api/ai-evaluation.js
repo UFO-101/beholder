@@ -4,7 +4,45 @@
 
 // AI evaluation function using Gemini
 export async function evaluateAesthetics(imageUrl, address, env) {
+  // Helper: convert ArrayBuffer to base64 in Workers
+  function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000; // avoid call stack limits
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+  }
+
+  async function ensureBase64(imageInput) {
+    if (!imageInput) return null;
+    // Already a data URL
+    if (typeof imageInput === 'string' && imageInput.startsWith('data:image/')) {
+      const commaIdx = imageInput.indexOf(',');
+      return imageInput.substring(commaIdx + 1);
+    }
+    // Heuristic: looks like base64 (no protocol, long, only base64 chars)
+    if (typeof imageInput === 'string' && !/^https?:\/\//i.test(imageInput) && /^[A-Za-z0-9+/=]+$/.test(imageInput)) {
+      return imageInput;
+    }
+    // Otherwise fetch the remote image URL and convert
+    if (typeof imageInput === 'string' && /^https?:\/\//i.test(imageInput)) {
+      const resp = await fetch(imageInput);
+      if (!resp.ok) throw new Error(`Failed to fetch image: ${resp.status}`);
+      const buf = await resp.arrayBuffer();
+      return arrayBufferToBase64(buf);
+    }
+    return null;
+  }
+
   try {
+    const base64Data = await ensureBase64(imageUrl);
+    if (!base64Data) {
+      throw new Error('Image data unavailable');
+    }
+
     const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
       method: 'POST',
       headers: {
@@ -52,7 +90,7 @@ SCORE: 2`
               {
                 inlineData: {
                   mimeType: "image/jpeg",
-                  data: imageUrl // This should be base64 encoded image data
+                  data: base64Data
                 }
               }
             ]

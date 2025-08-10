@@ -8,6 +8,7 @@ import { geocodeAddress } from './geocoding.js';
 import { getStreetViewImageUrl, hasStreetViewImagery } from './streetview.js';
 import { evaluateAesthetics } from './ai-evaluation.js';
 import { corsResponse, getH3Resolution } from './utils.js';
+import { cellToLatLng } from 'h3-js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -41,6 +42,27 @@ export default {
             JSON.stringify({ error: 'Failed to geocode address' }),
             { status: 400, headers: { 'Content-Type': 'application/json' } }
           ));
+        }
+
+        // If this place already exists, return it immediately (skip Street View + AI)
+        if (geoResult.place_id) {
+          const existingQuery = `
+            SELECT id, place_id, beauty, description, address, lat, lng, model_version, image_url
+            FROM points WHERE place_id = $1
+          `;
+          const existingResult = await client.query(existingQuery, [geoResult.place_id]);
+          if (existingResult.rows.length > 0) {
+            const existing = existingResult.rows[0];
+            await client.end();
+            return corsResponse(new Response(
+              JSON.stringify({
+                success: true,
+                point: existing,
+                message: 'Location already exists in database'
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            ));
+          }
         }
 
         // Determine image source
@@ -88,37 +110,11 @@ export default {
           }
         }
 
-        // Check for existing place_id to avoid duplicates
-        if (geoResult.place_id) {
-          const existingQuery = `SELECT id, beauty, description, address, lat, lng FROM points WHERE place_id = $1`;
-          const existingResult = await client.query(existingQuery, [geoResult.place_id]);
-          
-          if (existingResult.rows.length > 0) {
-            const existing = existingResult.rows[0];
-            return corsResponse(new Response(
-              JSON.stringify({
-                success: true,
-                point: {
-                  id: existing.id,
-                  place_id: geoResult.place_id,
-                  lat: existing.lat,
-                  lng: existing.lng,
-                  beauty: existing.beauty,
-                  description: existing.description,
-                  address: existing.address
-                },
-                message: 'Location already exists in database'
-              }),
-              { status: 200, headers: { 'Content-Type': 'application/json' } }
-            ));
-          }
-        }
-
         // Insert into database with new simplified schema
         const insertQuery = `
-          INSERT INTO points (place_id, beauty, description, model_version, address, lat, lng)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-          RETURNING id, place_id, lat, lng, beauty, description, address, model_version, created_at
+          INSERT INTO points (place_id, beauty, description, model_version, address, lat, lng, image_url)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING id, place_id, lat, lng, beauty, description, address, model_version, created_at, image_url
         `;
 
         const result = await client.query(insertQuery, [
@@ -128,7 +124,8 @@ export default {
           'gemini-2.5-flash', // Model version
           geoResult.formatted_address,
           geoResult.lat,
-          geoResult.lng
+          geoResult.lng,
+          finalImageUrl
         ]);
 
         const newPoint = result.rows[0];
@@ -144,7 +141,7 @@ export default {
         ));
       }
 
-      // GET /heat - Get aggregated heat data for heatmap
+      // GET /heat - Get aggregated heat data for heatmap (viewport-filtered)
       if (request.method === 'GET' && url.pathname === '/heat') {
         const zoom = parseInt(url.searchParams.get('z')) || 12;
         const bbox = url.searchParams.get('bbox');
@@ -158,26 +155,28 @@ export default {
 
         const [west, south, east, north] = bbox.split(',').map(Number);
         const resolution = getH3Resolution(zoom);
-        
-        // Simplified query - for now return all heat data (TODO: implement proper spatial filtering)
+
+        // Fetch candidate hexes, then filter in the Worker using h3-js
         const query = `
-          SELECT 
-            h3, 
-            avg,
-            h3_cell_to_lat_lng(h3) AS centroid
-          FROM heat_r${resolution}
+          SELECT h3, avg FROM heat_r${resolution}
           WHERE avg IS NOT NULL
-          LIMIT 10000
+          LIMIT 20000
         `;
 
         const result = await client.query(query);
-        
-        const heatData = result.rows.map(row => ({
-          lat: row.centroid.y,
-          lng: row.centroid.x,
-          avg: parseFloat(row.avg),
-          h3: row.h3
-        }));
+
+        const heatData = [];
+        for (const row of result.rows) {
+          const [lat, lng] = cellToLatLng(row.h3);
+          if (lng >= west && lng <= east && lat >= south && lat <= north) {
+            heatData.push({
+              lat,
+              lng,
+              avg: parseFloat(row.avg),
+              h3: row.h3
+            });
+          }
+        }
 
         await client.end();
 
@@ -211,7 +210,8 @@ export default {
             address,
             model_version,
             h3_r13,
-            created_at
+            created_at,
+            image_url
           FROM points
           WHERE lat BETWEEN $2 AND $4
             AND lng BETWEEN $1 AND $3
@@ -230,7 +230,7 @@ export default {
 
       // GET /maps-script - Get Google Maps script URL (keeps API key secure)
       if (request.method === 'GET' && url.pathname === '/maps-script') {
-        const scriptUrl = `https://maps.googleapis.com/maps/api/js?key=${env.GOOGLE_MAPS_API_KEY}&libraries=geometry`;
+        const scriptUrl = `https://maps.googleapis.com/maps/api/js?key=${env.GOOGLE_MAPS_API_KEY}&libraries=places,geometry&region=GB`;
         
         return corsResponse(new Response(
           JSON.stringify({ scriptUrl }),

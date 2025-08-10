@@ -37,6 +37,23 @@
             border-radius: 4px;
             box-sizing: border-box;
         }
+        .input-wrap {
+            position: relative;
+        }
+        .spinner {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ccc;
+            border-top-color: #4285f4;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+        @keyframes spin { from { transform: translateY(-50%) rotate(0deg); } to { transform: translateY(-50%) rotate(360deg); } }
         
         .controls button {
             background: #4285f4;
@@ -71,7 +88,7 @@
         .zoom-info {
             position: absolute;
             bottom: 10px;
-            right: 10px;
+            right: 70px;
             z-index: 1000;
             background: rgba(0,0,0,0.8);
             color: white;
@@ -124,6 +141,14 @@
             margin-right: 8px;
             border-radius: 50%;
         }
+
+        /* Ensure Google InfoWindow renders above app controls */
+        .gm-style .gm-style-iw,
+        .gm-style .gm-style-iw-c,
+        .gm-style .gm-style-iw-t,
+        .gm-style .gm-style-iw-a {
+            z-index: 3000 !important;
+        }
     </style>
 </head>
 <body>
@@ -131,12 +156,11 @@
     
     <div class="controls">
         <h3>🏗️ London Beauty Heatmap</h3>
-        <input type="text" id="addressInput" placeholder="Enter London address...">
-        <input type="url" id="imageInput" placeholder="Street View image URL (optional)...">
+        <div class="input-wrap">
+            <input type="text" id="addressInput" placeholder="Enter London address...">
+            <span id="addressSpinner" class="spinner"></span>
+        </div>
         <button id="addPointBtn">Add Beauty Rating</button>
-        <small style="color: #666; margin-top: 5px; display: block;">
-            Leave image URL blank to auto-fetch Street View
-        </small>
         <hr>
         <div>
             <label>
