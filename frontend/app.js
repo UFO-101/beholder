@@ -181,6 +181,20 @@ class BeautyHeatmap {
     setupEventListeners() {
         // Map events
         this.map.addListener('idle', () => this.refreshData());
+        
+        // Hide search box when in Street View mode
+        this.map.getStreetView().addListener('visible_changed', () => {
+            const streetViewVisible = this.map.getStreetView().getVisible();
+            const controls = document.querySelector('.controls');
+            if (controls) {
+                if (streetViewVisible) {
+                    controls.classList.add('popup-open');
+                } else {
+                    controls.classList.remove('popup-open');
+                }
+            }
+        });
+        
         // Close open info window when clicking on the map background
         this.map.addListener('click', () => {
             if (this.suppressNextMapClickClose) {
@@ -188,7 +202,11 @@ class BeautyHeatmap {
                 this.suppressNextMapClickClose = false;
                 return;
             }
-            if (this.infoWindow) this.infoWindow.close();
+            if (this.infoWindow) {
+                this.infoWindow.close();
+                // Show the controls when popup closes
+                document.querySelector('.controls')?.classList.remove('popup-open');
+            }
         });
         
         // Also close when clicking anywhere outside the InfoWindow (captures focus-first clicks)
@@ -203,20 +221,14 @@ class BeautyHeatmap {
                     if (inPopup) return; // Click inside popup; don't close
                 }
                 this.infoWindow.close();
+                // Show the controls when popup closes
+                document.querySelector('.controls')?.classList.remove('popup-open');
             };
             document.addEventListener('pointerdown', this.boundDocumentPointerDown, true);
         }
         
         // Control events
         document.getElementById('addPointBtn').addEventListener('click', () => this.addPoint());
-        document.getElementById('showHeatmap').addEventListener('change', (e) => {
-            this.showHeatmap = e.target.checked;
-            this.updateVisualization();
-        });
-        document.getElementById('showPoints').addEventListener('change', (e) => {
-            this.showPoints = e.target.checked;
-            this.updateVisualization();
-        });
         
         // Allow Enter key to submit
         document.getElementById('addressInput').addEventListener('keypress', (e) => {
@@ -294,79 +306,113 @@ class BeautyHeatmap {
         }
     }
     
+    
+    
     async updateVisualization() {
-        console.log('updateVisualization called');
         const layers = [];
         const zoom = this.map.getZoom();
+        
+        // Global transition speed control - lower number = faster transitions
+        const TRANSITION_DURATION = 300; // 2x faster than before (was 600ms)
+        
+        // Add small delay to ensure smooth transitions for new objects
+        if (!this.lastUpdateTime || (Date.now() - this.lastUpdateTime) > 100) {
+            this.lastUpdateTime = Date.now();
+        }
         
         // Update zoom info display
         this.updateZoomInfo(zoom);
         // Cursor is managed by deck.gl getCursor function
         
-        console.log('Current zoom:', zoom, 'Heatmap threshold:', CONFIG.HEATMAP_ZOOM_THRESHOLD);
-        console.log('Heat data count:', this.heatData.length, 'Point data count:', this.pointData.length);
-        console.log('Show heatmap:', this.showHeatmap, 'Show points:', this.showPoints);
         
         const resolution = this.getH3Resolution(zoom);
-        if (zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0 && resolution !== null) {
-            // Show H3 hexagons
-            console.log('Creating H3 hexagon layer with', this.heatData.length, 'hexagons');
-            console.log('H3 hexagon data sample:', this.heatData[0]);
+        const showHexagons = zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0 && resolution !== null;
+        const showPoints = zoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showPoints && this.pointData.length > 0;
+        
+        // Separate visibility for different hexagon resolutions
+        const showSmallHex = showHexagons && resolution === 13;
+        const showMediumHex = showHexagons && resolution === 9;  
+        const showLargeHex = showHexagons && resolution === 7;
+        
+        console.log('🔍 DEBUG: zoom =', zoom, 'resolution =', resolution);
+        console.log('🔍 DEBUG: showSmallHex =', showSmallHex, 'showMediumHex =', showMediumHex, 'showLargeHex =', showLargeHex);
+        console.log('🔍 DEBUG: showPoints =', showPoints);
+        console.log('🔍 DEBUG: heatData sample IDs =', this.heatData.slice(0, 3).map(d => d.h3));
+        
+        // Hexagons will be added below with opacity transitions
+        
+        // Store data by resolution for consistent transitions
+        if (!this.hexDataByResolution) {
+            this.hexDataByResolution = { 7: [], 9: [], 13: [] };
+        }
+        
+        // Update the current resolution's data - force consistent transitions by managing opacity manually
+        if (resolution && this.heatData.length > 0) {
+            console.log('🔍 DEBUG: Resolution', resolution, 'data update:');
+            console.log('  Previous:', (this.hexDataByResolution[resolution] || []).length, 'items');
+            console.log('  New:', this.heatData.length, 'items');
             
+            // Simply replace the data - let deck.gl handle transitions via getObjectId
+            this.hexDataByResolution[resolution] = this.heatData;
+        }
+        
+        // Create separate hexagon layers for each resolution that can fade independently
+        if (Object.values(this.hexDataByResolution).some(data => data.length > 0)) {
             let H3HexagonLayer;
             if (window.deck && window.deck.H3HexagonLayer) {
                 H3HexagonLayer = window.deck.H3HexagonLayer;
-            } else if (window.DeckGL && window.DeckGL.H3HexagonLayer) {
+            } else if (window.DeckGL) {
                 H3HexagonLayer = window.DeckGL.H3HexagonLayer;
-            } else if (window.H3HexagonLayer) {
-                H3HexagonLayer = window.H3HexagonLayer;
             } else {
-                console.error('H3HexagonLayer not found in global scope');
-                return;
+                throw new Error('H3HexagonLayer not found in global scope');
             }
             
-            // H3 hexagons should render at their true geographic sizes
-            // The H3 spec defines exact sizes: R7 ~1.22km, R9 ~176m, R13 ~2.4m edge length
-            // resolution is already calculated above and checked for null
+            // Create layers for each resolution type that always exist
+            const resolutions = [
+                { res: 7, show: showLargeHex, lineWidth: 2, lineOpacity: 160, name: 'large' },
+                { res: 9, show: showMediumHex, lineWidth: 1.5, lineOpacity: 130, name: 'medium' },
+                { res: 13, show: showSmallHex, lineWidth: 1, lineOpacity: 110, name: 'small' }
+            ];
             
-            // Style based on resolution for visibility, but don't artificially scale size
-            let lineWidth, lineOpacity;
-            if (resolution === 7) {
-                // R7 hexagons are naturally large (~1.22km edge) - use thicker lines
-                lineWidth = 2;
-                lineOpacity = 160;
-            } else if (resolution === 9) {
-                // R9 hexagons are medium (~176m edge) - medium lines
-                lineWidth = 1.5;
-                lineOpacity = 130;
-            } else if (resolution === 13) {
-                // R13 hexagons are naturally small (~2.4m edge) - thin lines but more visible
-                lineWidth = 1;
-                lineOpacity = 110;
-            } else {
-                // Fallback
-                lineWidth = 1;
-                lineOpacity = 100;
-            }
-            
-            layers.push(new H3HexagonLayer({
-                id: 'h3-hexagons',
-                data: this.heatData,
-                getHexagon: d => d.h3,
-                getFillColor: d => this.getBeautyHexColor(d.avg),
-                getLineColor: [255, 255, 255, lineOpacity],
-                lineWidthMinPixels: lineWidth,
-                // coverage: 1.0 is default - let H3 hexagons render at true geographic size
-                extruded: false,
-                stroked: true,
-                filled: true,
-                pickable: true,
-                onHover: this.onHexagonHover.bind(this),
-                onClick: this.onHexagonClick.bind(this)
-            }));
+            resolutions.forEach(({ res, show, lineWidth, lineOpacity, name }) => {
+                const opacity = show ? 1.0 : 0.0;
+                console.log(`🔍 DEBUG: ${name} hexagons (res ${res}) opacity =`, opacity);
+                
+                layers.push(new H3HexagonLayer({
+                    id: `h3-hexagons-${name}`,
+                    data: this.hexDataByResolution[res], // Use stored data for this resolution
+                    getHexagon: d => d.h3,
+                    // Use H3 ID for object identity matching across updates
+                    getObjectId: d => d.h3,
+                    getFillColor: d => this.getBeautyHexColor(d.avg),
+                    getLineColor: [255, 255, 255, lineOpacity],
+                    opacity: opacity,
+                    visible: true,
+                    lineWidthMinPixels: lineWidth,
+                    extruded: false,
+                    stroked: true,
+                    filled: true,
+                    pickable: show,
+                    onHover: this.onHexagonHover.bind(this),
+                    onClick: this.onHexagonClick.bind(this),
+                    transitions: {
+                        opacity: {
+                            duration: TRANSITION_DURATION,
+                            enter: () => 0.0,
+                            easing: t => t // Linear easing for consistent speed
+                        }
+                    },
+                    updateTriggers: {
+                        // Force re-evaluation when data changes to ensure transitions work
+                        getFillColor: [this.hexDataByResolution[res]?.length],
+                        getLineColor: [this.hexDataByResolution[res]?.length],
+                        opacity: [show] // Trigger when visibility changes
+                    }
+                }));
+            });
         }
         
-        if (zoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showPoints && this.pointData.length > 0) {
+        if (this.pointData.length > 0) {
             // Show individual points as large, crisp pins with readable labels
             let IconLayer, TextLayer;
             if (window.deck && window.deck.IconLayer) {
@@ -386,10 +432,15 @@ class BeautyHeatmap {
             await this.ensureExternalPin();
 
             // Pin icons (anchor at tip) from a sprite atlas for crisp rendering
+            const pointOpacity = showPoints ? 1.0 : 0.0;
+            console.log('🔍 DEBUG: Point layer opacity =', pointOpacity);
+            
             layers.push(new IconLayer({
                 id: 'beauty-pins',
                 data: this.pointData,
                 getPosition,
+                // Use unique ID for object identity matching
+                getObjectId: d => `${d.lat}-${d.lng}`,
                 // Use per-point SVG URL derived from the external base SVG and score color
                 getIcon: d => ({
                     url: this.getExternalPinForScore(d.beauty),
@@ -405,7 +456,15 @@ class BeautyHeatmap {
                 pickingRadius: 12, // Make picking a bit more forgiving
                 parameters: { depthTest: false }, // Ensure pins render and pick above anything else
                 onHover: this.onPointHover.bind(this),
-                onClick: this.onPointClick.bind(this)
+                onClick: this.onPointClick.bind(this),
+                opacity: pointOpacity,
+                transitions: {
+                    opacity: {
+                        duration: TRANSITION_DURATION,
+                        enter: () => 0.0,
+                        easing: t => t // Linear easing for consistent speed
+                    }
+                }
             }));
 
             // Score label centered inside the pin head
@@ -413,8 +472,11 @@ class BeautyHeatmap {
                 id: 'beauty-pin-labels',
                 data: this.pointData,
                 getPosition,
+                // Use same ID as IconLayer for consistent matching
+                getObjectId: d => `${d.lat}-${d.lng}`,
                 getText: d => `${Math.round(parseFloat(d.beauty))}`,
                 getColor: [255, 255, 255, 255],
+                opacity: pointOpacity,
                 getSize: 18,
                 sizeUnits: 'pixels',
                 sizeMinPixels: 18,
@@ -427,11 +489,17 @@ class BeautyHeatmap {
                 fontSettings: { sdf: false },
                 getPixelOffset: [0, -24],
                 pickable: false, // Avoid text intercepting clicks; let icons handle picking
-                parameters: { depthTest: false }
+                parameters: { depthTest: false },
+                transitions: {
+                    opacity: {
+                        duration: TRANSITION_DURATION,
+                        enter: () => 0.0,
+                        easing: t => t // Linear easing for consistent speed
+                    }
+                }
             }));
         }
         
-        console.log('Setting', layers.length, 'layers on overlay');
         this.overlay.setProps({ layers });
     }
     
@@ -711,11 +779,7 @@ class BeautyHeatmap {
                             ×
                         </button>
                     </div>
-                    <div style="margin: 2px 0 10px 0; color: #1f1f1f; font-size: 14px; line-height: 1.35;">${point.address}</div>
-                    <div style="background: #fafafa; border: 1px solid #eee; padding: 12px; border-radius: 10px; margin: 10px 0 6px 0;">
-                        <div style="font-weight: 600; margin-bottom: 6px; color: #222;">AI Review</div>
-                        <div style="font-style: italic; color: #333; font-size: 14px; line-height: 1.45;">"${point.description || 'No review available'}"</div>
-                    </div>
+                    <div style="margin: 2px 0 10px 4px; color: #1f1f1f; font-size: 14px; line-height: 1.35;">${point.address}</div>
                     ${point.image_url ? `
                         <a href="${point.image_url}" target="_blank" rel="noopener noreferrer" style="display: block; margin-top: 4px; text-decoration: none;">
                             <div style="width: 85%; margin: 0 auto; aspect-ratio: 1 / 1; border-radius: 10px; background: linear-gradient(90deg, #eee 25%, #f5f5f5 37%, #eee 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; position: relative; overflow: hidden;">
@@ -724,9 +788,13 @@ class BeautyHeatmap {
                                      style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 10px; opacity: 0; transition: opacity 200ms ease;">
                             </div>
                         </a>` : ''}
-                    <div style="margin-top: 10px; display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                        <span>${point.model_version || 'Unknown model'}</span>
+                    <div style="background: #fafafa; border: 1px solid #eee; padding: 12px; border-radius: 10px; margin: 10px 0 6px 0;">
+                        <div style="font-style: italic; color: #333; font-size: 14px; line-height: 1.45; margin-bottom: 8px;">"${point.description || 'No review available'}"</div>
+                        <div style="text-align: right; font-size: 12px; color: #666;">— ${(point.model_version || 'unknown-model').replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</div>
+                    </div>
+                    <div style="margin-top: 10px; margin-left: 4px; display: flex; justify-content: space-between; font-size: 12px; color: #666;">
                         <span>${point.created_at ? new Date(point.created_at).toLocaleDateString() : 'Unknown date'}</span>
+                        <span></span>
                     </div>
                     <style>
                         @keyframes shimmer {
@@ -748,11 +816,18 @@ class BeautyHeatmap {
             this.infoWindow.setContent(content);
             this.infoWindow.setPosition({ lat: parseFloat(point.lat), lng: parseFloat(point.lng) });
             this.infoWindow.open(this.map);
+            
+            // Hide the controls when popup is open
+            document.querySelector('.controls')?.classList.add('popup-open');
             // Wire up custom close button after content is in the DOM
             google.maps.event.addListenerOnce(this.infoWindow, 'domready', () => {
                 const btn = document.getElementById('bh-close');
                 if (btn) {
-                    btn.addEventListener('click', () => this.infoWindow.close());
+                    btn.addEventListener('click', () => {
+                        this.infoWindow.close();
+                        // Show the controls when popup closes
+                        document.querySelector('.controls')?.classList.remove('popup-open');
+                    });
                 }
                 // Move focus away from close button to the popup container
                 const iw = document.getElementById('bh-iw');
