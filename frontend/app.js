@@ -180,7 +180,7 @@ class BeautyHeatmap {
     
     setupEventListeners() {
         // Map events
-        this.map.addListener('idle', () => this.refreshData());
+        this.map.addListener('idle', () => this.debouncedRefreshData());
         
         // Hide search box when in Street View mode
         this.map.getStreetView().addListener('visible_changed', () => {
@@ -239,6 +239,19 @@ class BeautyHeatmap {
     async refreshData() {
         try {
             console.log('refreshData called');
+            
+            // Check if we need to trigger fade-out before loading new data
+            const newZoom = this.map.getZoom();
+            const newResolution = this.getH3Resolution(newZoom);
+            const newShowHexagons = newZoom < CONFIG.HEATMAP_ZOOM_THRESHOLD;
+            const newShowPoints = newZoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD;
+            
+            // Simplified approach: Just log zoom changes, handle fade-out in updateVisualization
+            if (this.lastZoom !== undefined && newZoom !== this.lastZoom) {
+                console.log(`Zoom transition: ${this.lastZoom} → ${newZoom}`);
+            }
+            
+            this.lastZoom = newZoom;
             const bounds = this.map.getBounds();
             if (!bounds) {
                 console.log('No map bounds available, loading all data instead');
@@ -299,11 +312,77 @@ class BeautyHeatmap {
                 }
             }
             
+            // Only update visualization after data is loaded to prevent double updates
             this.updateVisualization();
             
         } catch (error) {
             console.error('Failed to refresh data:', error);
         }
+    }
+    
+    debouncedRefreshData() {
+        // Debounce rapid refresh calls to prevent flickering from overlapping updates
+        if (this.refreshTimeout) {
+            clearTimeout(this.refreshTimeout);
+        }
+        
+        this.refreshTimeout = setTimeout(() => {
+            this.refreshData();
+            this.refreshTimeout = null;
+        }, 150); // Wait 150ms after map stops moving
+    }
+    
+    startFadeAnimation() {
+        // Cancel any existing animation
+        if (this.fadeAnimationId) {
+            cancelAnimationFrame(this.fadeAnimationId);
+        }
+        
+        const FADE_DURATION = 800; // Same as TRANSITION_DURATION
+        
+        const animate = () => {
+            // Check if any hexagons are still fading in or out
+            const now = Date.now();
+            let stillAnimating = false;
+            let animatingCount = 0;
+            
+            // Clean up completed fade-out hexagons and check for ongoing animations
+            [7, 9].forEach(res => {
+                this.hexDataByResolution[res] = this.hexDataByResolution[res].filter(hex => {
+                    // Check fade-in animation
+                    if (hex._spawnTime && (now - hex._spawnTime) < FADE_DURATION) {
+                        stillAnimating = true;
+                        animatingCount++;
+                        return true; // Keep hexagon
+                    }
+                    
+                    // Check fade-out animation
+                    if (hex._fadeOutTime) {
+                        if ((now - hex._fadeOutTime) < FADE_DURATION) {
+                            stillAnimating = true;
+                            animatingCount++;
+                            return true; // Keep hexagon (still fading out)
+                        } else {
+                            return false; // Remove hexagon (fade-out complete)
+                        }
+                    }
+                    
+                    return true; // Keep hexagon (no animation)
+                });
+            });
+            
+            if (stillAnimating) {
+                // Force deck.gl to recalculate colors by updating a trigger
+                this.animationTrigger = (this.animationTrigger || 0) + 1;
+                this.updateVisualization();
+                this.fadeAnimationId = requestAnimationFrame(animate);
+            } else {
+                this.fadeAnimationId = null;
+            }
+        };
+        
+        // Start animation
+        this.fadeAnimationId = requestAnimationFrame(animate);
     }
     
     
@@ -313,7 +392,7 @@ class BeautyHeatmap {
         const zoom = this.map.getZoom();
         
         // Global transition speed control - lower number = faster transitions
-        const TRANSITION_DURATION = 300; // 2x faster than before (was 600ms)
+        const TRANSITION_DURATION = 800; // Slower fade-in to see the effect
         
         // Add small delay to ensure smooth transitions for new objects
         if (!this.lastUpdateTime || (Date.now() - this.lastUpdateTime) > 100) {
@@ -329,31 +408,89 @@ class BeautyHeatmap {
         const showHexagons = zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0 && resolution !== null;
         const showPoints = zoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showPoints && this.pointData.length > 0;
         
-        // Separate visibility for different hexagon resolutions
-        const showSmallHex = showHexagons && resolution === 13;
-        const showMediumHex = showHexagons && resolution === 9;  
-        const showLargeHex = showHexagons && resolution === 7;
+        // Separate visibility for different hexagon resolutions  
+        const showLargeHex = showHexagons && resolution === 7;   // Zoom 9-12: Large R7 hexagons
+        const showMediumHex = showHexagons && resolution === 9;  // Zoom 13-15: Medium R9 hexagons
+        const showSmallHex = false; // No small hexagons defined in getH3Resolution
         
-        console.log('🔍 DEBUG: zoom =', zoom, 'resolution =', resolution);
-        console.log('🔍 DEBUG: showSmallHex =', showSmallHex, 'showMediumHex =', showMediumHex, 'showLargeHex =', showLargeHex);
-        console.log('🔍 DEBUG: showPoints =', showPoints);
-        console.log('🔍 DEBUG: heatData sample IDs =', this.heatData.slice(0, 3).map(d => d.h3));
+        // Visibility logic for different layer types
         
         // Hexagons will be added below with opacity transitions
         
         // Store data by resolution for consistent transitions
         if (!this.hexDataByResolution) {
-            this.hexDataByResolution = { 7: [], 9: [], 13: [] };
+            this.hexDataByResolution = { 7: [], 9: [] };
         }
         
-        // Update the current resolution's data - force consistent transitions by managing opacity manually
-        if (resolution && this.heatData.length > 0) {
-            console.log('🔍 DEBUG: Resolution', resolution, 'data update:');
-            console.log('  Previous:', (this.hexDataByResolution[resolution] || []).length, 'items');
-            console.log('  New:', this.heatData.length, 'items');
+        // Handle fade-out for hexagons that should no longer be visible
+        let shouldAnimate = false;
+        const now = Date.now();
+        
+        // Simple rule: if a resolution shouldn't be shown, fade it out
+        [7, 9].forEach(res => {
+            const shouldShow = (res === 7 && showLargeHex) || (res === 9 && showMediumHex);
             
-            // Simply replace the data - let deck.gl handle transitions via getObjectId
-            this.hexDataByResolution[resolution] = this.heatData;
+            if (this.hexDataByResolution[res]?.length > 0) {
+                this.hexDataByResolution[res] = this.hexDataByResolution[res].map(hex => {
+                    if (!shouldShow && !hex._fadeOutTime) {
+                        console.log(`Fading out resolution ${res} hexagon`);
+                        shouldAnimate = true;
+                        return { ...hex, _fadeOutTime: now };
+                    }
+                    return hex;
+                });
+            }
+        });
+        
+        // Update the current resolution's data and clear others to prevent overlap
+        if (resolution && this.heatData.length > 0) {
+            // Don't recreate data if we're currently animating to prevent infinite loop
+            if (!this.fadeAnimationId) {
+                // Keep existing hexagons for current resolution to avoid reanimating
+                const existingHexagons = this.hexDataByResolution[resolution] || [];
+                const existingHexagonIds = new Set(existingHexagons.map(h => h.h3));
+                
+                // Don't clear current resolution data if it exists, just update other resolutions
+                if (resolution !== this.lastResolution) {
+                    [7, 9].forEach(res => {
+                        if (res !== resolution) {
+                            // Mark for fade-out instead of clearing immediately
+                            if (this.hexDataByResolution[res]?.length > 0) {
+                                this.hexDataByResolution[res] = this.hexDataByResolution[res].map(hex => {
+                                    if (!hex._fadeOutTime) {
+                                        shouldAnimate = true;
+                                        return { ...hex, _fadeOutTime: now };
+                                    }
+                                    return hex;
+                                });
+                            }
+                        }
+                    });
+                    this.lastResolution = resolution;
+                }
+                
+                // Separate new vs existing hexagons
+                const dataWithTimestamps = this.heatData.map(hex => {
+                    if (existingHexagonIds.has(hex.h3)) {
+                        // Keep existing hexagon with its original spawn time
+                        const existing = existingHexagons.find(h => h.h3 === hex.h3);
+                        return { ...hex, _spawnTime: existing._spawnTime };
+                    } else {
+                        // New hexagon gets current timestamp for fade-in
+                        shouldAnimate = true;
+                        return { ...hex, _spawnTime: now };
+                    }
+                });
+                
+                // Set data only for current resolution
+                this.hexDataByResolution[resolution] = dataWithTimestamps;
+                
+                // Start animation if we have new hexagons
+                const newHexagons = dataWithTimestamps.filter(h => h._spawnTime === now);
+                if (newHexagons.length > 0) {
+                    shouldAnimate = true;
+                }
+            }
         }
         
         // Create separate hexagon layers for each resolution that can fade independently
@@ -370,45 +507,75 @@ class BeautyHeatmap {
             // Create layers for each resolution type that always exist
             const resolutions = [
                 { res: 7, show: showLargeHex, lineWidth: 2, lineOpacity: 160, name: 'large' },
-                { res: 9, show: showMediumHex, lineWidth: 1.5, lineOpacity: 130, name: 'medium' },
-                { res: 13, show: showSmallHex, lineWidth: 1, lineOpacity: 110, name: 'small' }
+                { res: 9, show: showMediumHex, lineWidth: 1.5, lineOpacity: 130, name: 'medium' }
             ];
             
             resolutions.forEach(({ res, show, lineWidth, lineOpacity, name }) => {
-                const opacity = show ? 1.0 : 0.0;
-                console.log(`🔍 DEBUG: ${name} hexagons (res ${res}) opacity =`, opacity);
-                
-                layers.push(new H3HexagonLayer({
+                // Always create layers if they have data, even if not currently visible (for fade-out)
+                if (this.hexDataByResolution[res]?.length > 0) {
+                    console.log(`Creating ${name} hex layer: ${this.hexDataByResolution[res].length} hexagons, show=${show}`);
+                    
+                    layers.push(new H3HexagonLayer({
                     id: `h3-hexagons-${name}`,
                     data: this.hexDataByResolution[res], // Use stored data for this resolution
                     getHexagon: d => d.h3,
-                    // Use H3 ID for object identity matching across updates
-                    getObjectId: d => d.h3,
-                    getFillColor: d => this.getBeautyHexColor(d.avg),
-                    getLineColor: [255, 255, 255, lineOpacity],
-                    opacity: opacity,
+                    // Note: getId doesn't work with H3HexagonLayer (uses array indices)
+                    // Manual fade-in/out using timestamps (deck.gl transitions don't work with H3HexagonLayer)
+                    getFillColor: d => {
+                        const c = this.getBeautyHexColor(d.avg);
+                        const now = Date.now();
+                        const baseAlpha = c[3] || 150; // Use the alpha from getBeautyHexColor
+                        
+                        // Handle fade-out first (takes priority)
+                        if (d._fadeOutTime) {
+                            const fadeOutAge = now - d._fadeOutTime;
+                            const fadeOutProgress = Math.min(fadeOutAge / TRANSITION_DURATION, 1.0);
+                            const a = Math.round(baseAlpha * (1.0 - fadeOutProgress)); // Fade from full to 0
+                            return [c[0], c[1], c[2], a];
+                        }
+                        
+                        // If layer shouldn't be shown and no fade-out, make invisible
+                        if (!show) return [c[0], c[1], c[2], 0];
+                        
+                        // Handle fade-in
+                        if (d._spawnTime) {
+                            const fadeInAge = now - d._spawnTime;
+                            const fadeInProgress = Math.min(fadeInAge / TRANSITION_DURATION, 1.0);
+                            const a = Math.round(fadeInProgress * baseAlpha); // Fade from 0 to full
+                            return [c[0], c[1], c[2], a];
+                        }
+                        
+                        // No animation, just show at full opacity
+                        return [c[0], c[1], c[2], baseAlpha];
+                    },
+                    getLineColor: d => {
+                        const now = Date.now();
+                        // Handle line fade-out too
+                        if (d._fadeOutTime) {
+                            const fadeOutAge = now - d._fadeOutTime;
+                            const fadeOutProgress = Math.min(fadeOutAge / TRANSITION_DURATION, 1.0);
+                            const alpha = Math.round(lineOpacity * (1.0 - fadeOutProgress));
+                            return [255, 255, 255, alpha];
+                        }
+                        return [255, 255, 255, Math.round(lineOpacity * (show ? 1.0 : 0.0))];
+                    },
                     visible: true,
                     lineWidthMinPixels: lineWidth,
                     extruded: false,
                     stroked: true,
                     filled: true,
-                    pickable: show,
+                    pickable: show, // Make pickable when visible
                     onHover: this.onHexagonHover.bind(this),
                     onClick: this.onHexagonClick.bind(this),
-                    transitions: {
-                        opacity: {
-                            duration: TRANSITION_DURATION,
-                            enter: () => 0.0,
-                            easing: t => t // Linear easing for consistent speed
-                        }
-                    },
+                    // DISABLE transitions - H3HexagonLayer doesn't support object identity
+                    // Transitions cause wrong hexagons to change color due to array index matching
                     updateTriggers: {
-                        // Force re-evaluation when data changes to ensure transitions work
-                        getFillColor: [this.hexDataByResolution[res]?.length],
-                        getLineColor: [this.hexDataByResolution[res]?.length],
-                        opacity: [show] // Trigger when visibility changes
+                        // Trigger color recompute when data length, visibility, or animation frame changes
+                        getFillColor: [this.hexDataByResolution[res]?.length, show, this.animationTrigger],
+                        getLineColor: [this.hexDataByResolution[res]?.length, show, this.animationTrigger]
                     }
                 }));
+                }
             });
         }
         
@@ -432,15 +599,14 @@ class BeautyHeatmap {
             await this.ensureExternalPin();
 
             // Pin icons (anchor at tip) from a sprite atlas for crisp rendering
-            const pointOpacity = showPoints ? 1.0 : 0.0;
-            console.log('🔍 DEBUG: Point layer opacity =', pointOpacity);
+            const pointAlpha = showPoints ? 255 : 0;
             
             layers.push(new IconLayer({
                 id: 'beauty-pins',
                 data: this.pointData,
                 getPosition,
                 // Use unique ID for object identity matching
-                getObjectId: d => `${d.lat}-${d.lng}`,
+                getId: d => d.id || d.place_id || `${d.lat}-${d.lng}`,
                 // Use per-point SVG URL derived from the external base SVG and score color
                 getIcon: d => ({
                     url: this.getExternalPinForScore(d.beauty),
@@ -457,14 +623,9 @@ class BeautyHeatmap {
                 parameters: { depthTest: false }, // Ensure pins render and pick above anything else
                 onHover: this.onPointHover.bind(this),
                 onClick: this.onPointClick.bind(this),
-                opacity: pointOpacity,
-                transitions: {
-                    opacity: {
-                        duration: TRANSITION_DURATION,
-                        enter: () => 0.0,
-                        easing: t => t // Linear easing for consistent speed
-                    }
-                }
+                getColor: d => [255, 255, 255, pointAlpha],
+                transitions: { getColor: { duration: TRANSITION_DURATION } },
+                updateTriggers: { getColor: [pointAlpha] }
             }));
 
             // Score label centered inside the pin head
@@ -472,11 +633,10 @@ class BeautyHeatmap {
                 id: 'beauty-pin-labels',
                 data: this.pointData,
                 getPosition,
-                // Use same ID as IconLayer for consistent matching
-                getObjectId: d => `${d.lat}-${d.lng}`,
+                // Use same stable ID as IconLayer for consistent matching
+                getId: d => d.id || d.place_id || `${d.lat}-${d.lng}`,
                 getText: d => `${Math.round(parseFloat(d.beauty))}`,
-                getColor: [255, 255, 255, 255],
-                opacity: pointOpacity,
+                getColor: d => [255, 255, 255, pointAlpha],
                 getSize: 18,
                 sizeUnits: 'pixels',
                 sizeMinPixels: 18,
@@ -490,14 +650,14 @@ class BeautyHeatmap {
                 getPixelOffset: [0, -24],
                 pickable: false, // Avoid text intercepting clicks; let icons handle picking
                 parameters: { depthTest: false },
-                transitions: {
-                    opacity: {
-                        duration: TRANSITION_DURATION,
-                        enter: () => 0.0,
-                        easing: t => t // Linear easing for consistent speed
-                    }
-                }
+                transitions: { getColor: { duration: TRANSITION_DURATION } },
+                updateTriggers: { getColor: [pointAlpha] }
             }));
+        }
+        
+        // Start animation if needed
+        if (shouldAnimate && !this.fadeAnimationId) {
+            this.startFadeAnimation();
         }
         
         this.overlay.setProps({ layers });
