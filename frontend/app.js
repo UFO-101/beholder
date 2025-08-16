@@ -69,6 +69,7 @@ class BeautyHeatmap {
         this.pinAtlasUrl = null;
         this.pinAtlasMapping = null;
         this.externalPinSvg = null;
+        this.textIconCache = new Map();
         
         // Show debug UI if debug mode is enabled
         this.initDebugUI();
@@ -663,11 +664,20 @@ class BeautyHeatmap {
             
             // Clean up completed fade-out points and check for ongoing animations
             this.pointData = this.pointData.filter(point => {
+                let hasActiveAnimation = false;
+                
                 // Check fade-in animation
                 if (point._spawnTime && (now - point._spawnTime) < FADE_DURATION) {
                     stillAnimating = true;
                     animatingCount++;
-                    return true; // Keep point
+                    hasActiveAnimation = true;
+                }
+                
+                // Check text fade-in animation
+                if (point._textSpawnTime && (now - point._textSpawnTime) < FADE_DURATION) {
+                    stillAnimating = true;
+                    animatingCount++;
+                    hasActiveAnimation = true;
                 }
                 
                 // Check fade-out animation
@@ -675,13 +685,25 @@ class BeautyHeatmap {
                     if ((now - point._fadeOutTime) < FADE_DURATION) {
                         stillAnimating = true;
                         animatingCount++;
-                        return true; // Keep point (still fading out)
+                        hasActiveAnimation = true;
                     } else {
                         return false; // Remove point (fade-out complete)
                     }
                 }
                 
-                return true; // Keep point (no animation)
+                // Check text fade-out animation
+                if (point._textFadeOutTime) {
+                    if ((now - point._textFadeOutTime) < FADE_DURATION) {
+                        stillAnimating = true;
+                        animatingCount++;
+                        hasActiveAnimation = true;
+                    } else {
+                        // Clean up completed text fade-out timestamp but keep the point
+                        delete point._textFadeOutTime;
+                    }
+                }
+                
+                return true; // Keep point (remove only on complete point fade-out)
             });
             
             if (stillAnimating) {
@@ -736,10 +758,12 @@ class BeautyHeatmap {
     calculateVisibility(zoom, resolution) {
         const showHexagons = zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0 && resolution !== null;
         const showPoints = zoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showPoints && this.pointData.length > 0;
+        const showText = showPoints && zoom >= 18; // Text only shows at zoom 18+
         
         return {
             showHexagons,
             showPoints,
+            showText,
             showLargeHex: showHexagons && resolution === 7,   // Zoom 9-12: Large R7 hexagons
             showMediumHex: showHexagons && resolution === 9,  // Zoom 13-15: Medium R9 hexagons
             showSmallHex: false // No small hexagons defined in getH3Resolution
@@ -855,6 +879,27 @@ class BeautyHeatmap {
             this.existingPointData = [];
         }
         
+        // Handle text visibility transitions (zoom level 18)
+        if (this.pointData.length > 0 && visibility.showPoints) {
+            const wasShowingText = this.lastVisibility && this.lastVisibility.showText;
+            const isTextTransition = wasShowingText !== visibility.showText;
+            
+            if (isTextTransition) {
+                this.pointData = this.pointData.map(point => {
+                    if (visibility.showText && !wasShowingText) {
+                        // Transitioning to show text - add spawn time for text fade-in
+                        shouldAnimate = true;
+                        return { ...point, _textSpawnTime: now };
+                    } else if (!visibility.showText && wasShowingText) {
+                        // Transitioning to hide text - add fade-out time for text
+                        shouldAnimate = true;
+                        return { ...point, _textFadeOutTime: now };
+                    }
+                    return point;
+                });
+            }
+        }
+        
         // Handle point fade-in when switching to points
         if (this.pointData.length > 0 && visibility.showPoints) {
             // Check if we're transitioning from hexagons to points
@@ -929,7 +974,11 @@ class BeautyHeatmap {
         await this.ensureExternalPin();
         
         layers.push(this.createPointIconLayer(IconLayer, visibility.showPoints));
-        layers.push(this.createPointTextLayer(TextLayer, visibility.showPoints));
+        
+        // Always create text icon layer when points are visible, visibility controlled by animation
+        if (visibility.showPoints) {
+            layers.push(this.createPointTextIconLayer(IconLayer, visibility.showText));
+        }
     }
     
     getH3HexagonLayer() {
@@ -1032,7 +1081,9 @@ class BeautyHeatmap {
         }
         
         // If layer shouldn't be shown and no fade-out, make invisible
-        if (!showPoints) return [255, 255, 255, CONFIG.ANIMATION.MIN_ALPHA];
+        if (!showPoints) {
+            return [255, 255, 255, CONFIG.ANIMATION.MIN_ALPHA];
+        }
         
         // Handle fade-in
         if (d._spawnTime) {
@@ -1046,12 +1097,71 @@ class BeautyHeatmap {
         return [255, 255, 255, baseAlpha];
     }
     
+    calculateTextColor(d, showText) {
+        const now = Date.now();
+        const baseAlpha = 255;
+        const TRANSITION_DURATION = CONFIG.ANIMATION.FADE_DURATION;
+        
+        // Handle placeholder points
+        if (d._isPlaceholder) {
+            return [255, 255, 255, 0]; // Hide placeholder text
+        }
+        
+        // Handle text-specific fade-out first (takes priority)
+        if (d._textFadeOutTime) {
+            const fadeOutAge = now - d._textFadeOutTime;
+            const fadeOutProgress = Math.min(fadeOutAge / TRANSITION_DURATION, 1.0);
+            const a = Math.round(baseAlpha * (1.0 - fadeOutProgress));
+            return [255, 255, 255, a];
+        }
+        
+        // Handle point fade-out (when switching to hexagons)
+        if (d._fadeOutTime) {
+            const fadeOutAge = now - d._fadeOutTime;
+            const fadeOutProgress = Math.min(fadeOutAge / TRANSITION_DURATION, 1.0);
+            const a = Math.round(baseAlpha * (1.0 - fadeOutProgress));
+            return [255, 255, 255, a];
+        }
+        
+        // If text shouldn't be shown, make invisible
+        if (!showText) {
+            return [255, 255, 255, 0];
+        }
+        
+        // Handle text-specific fade-in
+        if (d._textSpawnTime) {
+            const fadeInAge = now - d._textSpawnTime;
+            const fadeInProgress = Math.min(fadeInAge / TRANSITION_DURATION, 1.0);
+            const a = Math.round(fadeInProgress * baseAlpha);
+            return [255, 255, 255, a];
+        }
+        
+        // Handle point fade-in (when switching from hexagons)
+        if (d._spawnTime) {
+            const fadeInAge = now - d._spawnTime;
+            const fadeInProgress = Math.min(fadeInAge / TRANSITION_DURATION, 1.0);
+            const a = Math.round(fadeInProgress * baseAlpha);
+            return [255, 255, 255, a];
+        }
+        
+        // No animation, show at full opacity
+        return [255, 255, 255, baseAlpha];
+    }
+    
     createPointIconLayer(IconLayer, showPoints) {
         const getPosition = d => [parseFloat(d.lng), parseFloat(d.lat)];
         
+        // Sort data from south to north (lower latitude to higher latitude)
+        // This ensures northern markers render on top of southern ones
+        const sortedData = [...this.pointData].sort((a, b) => {
+            const latA = parseFloat(a.lat) || 0;
+            const latB = parseFloat(b.lat) || 0;
+            return latB - latA; // North first, south on top
+        });
+        
         return new IconLayer({
             id: 'beauty-pins',
-            data: this.pointData,
+            data: sortedData,
             getPosition,
             getId: d => d.id || d.place_id || `${d.lat}-${d.lng}`,
             getIcon: d => ({
@@ -1067,7 +1177,7 @@ class BeautyHeatmap {
             sizeMinPixels: 56,
             sizeMaxPixels: 72,
             pickable: true,
-            pickingRadius: 12,
+            pickingRadius: 6,
             parameters: { depthTest: false },
             onHover: this.onPointHover.bind(this),
             onClick: this.onPointClick.bind(this),
@@ -1076,7 +1186,7 @@ class BeautyHeatmap {
         });
     }
     
-    createPointTextLayer(TextLayer, showPoints) {
+    createPointTextLayer(TextLayer, showText) {
         const getPosition = d => [parseFloat(d.lng), parseFloat(d.lat)];
         
         return new TextLayer({
@@ -1089,7 +1199,7 @@ class BeautyHeatmap {
                 const num = parseFloat(d.beauty);
                 return Number.isFinite(num) ? `${Math.round(num)}` : '';
             },
-            getColor: d => this.calculatePointColor(d, showPoints),
+            getColor: d => this.calculateTextColor(d, showText),
             getSize: 18,
             sizeUnits: 'pixels',
             sizeMinPixels: 18,
@@ -1102,7 +1212,47 @@ class BeautyHeatmap {
             getPixelOffset: [0, -24],
             pickable: false,
             parameters: { depthTest: false },
-            updateTriggers: { getColor: [this.pointData.length, showPoints, this.animationTrigger] }
+            updateTriggers: { 
+                getColor: [this.pointData.length, showText, this.animationTrigger]
+            }
+        });
+    }
+    
+    createPointTextIconLayer(IconLayer, showText) {
+        const getPosition = d => [parseFloat(d.lng), parseFloat(d.lat)];
+        
+        return new IconLayer({
+            id: 'beauty-pin-text-icons',
+            data: this.pointData,
+            getPosition,
+            getId: d => `text-${d.id || d.place_id || `${d.lat}-${d.lng}`}`,
+            getIcon: d => {
+                const num = parseFloat(d.beauty);
+                if (!Number.isFinite(num) || d._isPlaceholder) {
+                    return null; // No icon for invalid numbers or placeholders
+                }
+                return {
+                    url: this.getTextIcon(Math.round(num)),
+                    width: 64,
+                    height: 64,
+                    anchorX: 32,
+                    anchorY: 32
+                };
+            },
+            sizeUnits: 'pixels',
+            getSize: 24,
+            sizeMinPixels: 18,
+            sizeMaxPixels: 30,
+            getPixelOffset: [0, -28],
+            pickable: false,
+            parameters: { 
+                depthTest: false,
+                depthMask: false
+            },
+            getColor: d => this.calculateTextColor(d, showText),
+            updateTriggers: { 
+                getColor: [this.pointData.length, showText, this.animationTrigger]
+            }
         });
     }
     
@@ -1214,7 +1364,7 @@ class BeautyHeatmap {
     </filter>
   </defs>
   <g filter='url(#shadow)'>
-    <path d='M24 2c-9.94 0-18 8.06-18 18 0 12.5 18 36 18 36s18-23.5 18-36C42 10.06 33.94 2 24 2z' fill='${fill}' stroke='rgba(0,0,0,0.6)' stroke-width='2'/>
+    <path d='M24 2c-9.94 0-18 8.06-18 18 0 12.5 18 36 18 36s18-23.5 18-36C42 10.06 33.94 2 24 2z' fill='${fill}' stroke='rgba(0,0,0,0.8)' stroke-width='4'/>
     <circle cx='24' cy='22' r='9' fill='white' fill-opacity='0.95'/>
   </g>
 </svg>`;
@@ -1324,17 +1474,43 @@ class BeautyHeatmap {
             return this.getMarkerIcon(5); // neutral fallback
         }
         
-        // Replace currentColor in the SVG with the desired fill color and remove stroke for crisp edges
-        const colored = this.externalPinSvg
-            .replace(/currentColor/gi, color)
-            .replace(/stroke=".*?"/gi, '')
-            .replace(/stroke-width=".*?"/gi, '');
-        const url = `data:image/svg+xml;utf8,${encodeURIComponent(colored)}`;
+        // Create SVG with proper stroke and expanded viewBox to prevent clipping
+        const withBorder = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="-2 -2 24 24">
+            <path fill="${color}" stroke="black" stroke-width="0.25" stroke-linejoin="round" stroke-linecap="round" 
+                  d="M10 20S3 10.87 3 7a7 7 0 1 1 14 0c0 3.87-7 13-7 13zm0-11a2 2 0 1 0 0-4a2 2 0 0 0 0 4z"/>
+        </svg>`;
+        
+        const url = `data:image/svg+xml;utf8,${encodeURIComponent(withBorder)}`;
+        
+        // Debug: log the final SVG for the first few icons to see what we're generating
+        if (CONFIG.DEBUG && Math.random() < 0.1) {
+            console.log('Generated icon SVG:', withBorder);
+        }
         
         if (cacheKey) {
             this.iconCache.set(cacheKey, url);
         }
         
+        return url;
+    }
+    
+    getTextIcon(number) {
+        const rounded = Math.round(number);
+        if (this.textIconCache.has(rounded)) {
+            return this.textIconCache.get(rounded);
+        }
+        
+        // Create SVG text with border - viewBox sized to prevent clipping
+        const textSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 32 32">
+            <text x="16" y="18" font-family="Arial Black, Arial, sans-serif" font-size="20" font-weight="900" 
+                  text-anchor="middle" dominant-baseline="central" 
+                  fill="white" stroke="black" stroke-width="0.5" stroke-linejoin="round" stroke-linecap="round">
+                ${rounded}
+            </text>
+        </svg>`;
+        
+        const url = `data:image/svg+xml;utf8,${encodeURIComponent(textSvg)}`;
+        this.textIconCache.set(rounded, url);
         return url;
     }
     
