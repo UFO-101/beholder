@@ -74,13 +74,32 @@
             color: var(--text-primary);
         }
         
+        /* Ensure map stays visible during mobile interactions */
+        #map {
+            min-height: 100vh;
+            position: relative;
+            z-index: 1;
+        }
+        
         .controls {
             position: absolute;
             top: 5px;
             right: 5px;
             z-index: 1000;
             width: 400px;
+            max-width: calc(100vw - 20px);
             transition: opacity 0.3s ease;
+        }
+        
+        /* Mobile responsive adjustments */
+        @media (max-width: 480px) {
+            .controls {
+                top: 5px;
+                right: 8px;
+                left: 8px;
+                width: auto;
+                max-width: none;
+            }
         }
         
         .controls h3 {
@@ -268,7 +287,7 @@
     
     <div class="controls">
         <div class="input-wrap">
-            <input type="text" id="addressInput" placeholder="Enter London address and press Enter...">
+            <input type="text" id="addressInput" placeholder="Enter London address and press Enter..." style="display: none;">
             <span id="addressSpinner" class="spinner"></span>
         </div>
     </div>
