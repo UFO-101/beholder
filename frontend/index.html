@@ -19,6 +19,34 @@
             --button-hover: #3367d6;
             --button-disabled: #ccc;
         }
+        /* ECL theming tokens (global) so Place Picker input + dropdown follow dark/light */
+        :root {
+            /* Default to dark-ish; override in light media below */
+            --gmpx-color-surface: #121212;            /* dropdown & input bg */
+            --gmpx-color-on-surface: #e8eaed;         /* primary text */
+            --gmpx-color-on-surface-variant: #b0b3b8; /* secondary line */
+            --gmpx-color-primary: #8ab4f8;            /* focus/active accents */
+            --gmpx-color-on-primary: #121212;         /* text on primary color */
+            --gmpx-font-family-base: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            --gmpx-font-size-base: 0.95rem;           /* nudges row height */
+            
+            /* Additional properties that might affect dropdown styling */
+            --gmpx-color-surface-variant: #1e1e1e;    /* alternative surface color */
+            --gmpx-color-outline: #404040;            /* border/outline color */
+            --gmpx-color-outline-variant: #333333;    /* secondary border color */
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --gmpx-color-surface: #ffffff;
+                --gmpx-color-on-surface: #212121;
+                --gmpx-color-on-surface-variant: #757575;
+                --gmpx-color-primary: #1976d2;
+                --gmpx-color-on-primary: #ffffff;
+                --gmpx-color-surface-variant: #f5f5f5;
+                --gmpx-color-outline: #e0e0e0;
+                --gmpx-color-outline-variant: #f0f0f0;
+            }
+        }
         
         @media (prefers-color-scheme: dark) {
             :root {
@@ -48,23 +76,18 @@
         
         .controls {
             position: absolute;
-            top: 60px;
-            left: 10px;
+            top: 5px;
+            right: 5px;
             z-index: 1000;
-            background: var(--bg-primary);
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px var(--shadow);
-            max-width: 300px;
+            width: 400px;
             transition: opacity 0.3s ease;
-            border: 1px solid var(--border-color);
         }
         
         .controls h3 {
             margin: 0 0 10px 0;
             color: var(--text-primary);
         }
-        
+
         .controls input, .controls button {
             width: 100%;
             padding: 8px;
@@ -109,10 +132,26 @@
             background: var(--button-disabled);
             cursor: not-allowed;
         }
+        /* Size/spacing for ECL place picker */
+        .controls gmpx-place-picker {
+            display: block;
+            width: 100%;
+            margin: 5px 0;
+            border-radius: 12px;             /* nicer silhouette */
+            overflow: visible;                /* allow dropdown to render fully */
+            filter: drop-shadow(0 6px 20px rgba(0,0,0,.25));
+            
+            /* Additional theming attempt via CSS properties */
+            --gmpx-color-surface: var(--gmpx-color-surface);
+            --gmpx-color-on-surface: var(--gmpx-color-on-surface);
+            --gmpx-color-on-surface-variant: var(--gmpx-color-on-surface-variant);
+            --gmpx-color-primary: var(--gmpx-color-primary);
+            --gmpx-color-outline: var(--gmpx-color-outline);
+        }
         
         .stats {
             position: absolute;
-            bottom: 10px;
+            top: 60px;
             left: 10px;
             z-index: 1000;
             background: var(--bg-primary);
@@ -122,6 +161,7 @@
             font-size: 12px;
             color: var(--text-secondary);
             border: 1px solid var(--border-color);
+            display: none; /* Hidden by default, shown only in debug mode */
         }
         
         .zoom-info {
@@ -136,6 +176,7 @@
             font-family: monospace;
             font-size: 14px;
             font-weight: bold;
+            display: none; /* Hidden by default, shown only in debug mode */
         }
         
         .loading {
@@ -186,13 +227,46 @@
             opacity: 0 !important;
             pointer-events: none !important;
         }
+
+        /* Dark mode styling for Google Places autocomplete dropdown */
+        @media (prefers-color-scheme: dark) {
+            .pac-container {
+                background-color: var(--bg-primary) !important;
+                border: 1px solid var(--border-color) !important;
+                box-shadow: 0 2px 10px var(--shadow) !important;
+            }
+            
+            .pac-item {
+                background-color: var(--bg-primary) !important;
+                color: var(--text-primary) !important;
+                border-bottom: 1px solid var(--border-color-light) !important;
+            }
+            
+            .pac-item:hover {
+                background-color: var(--bg-secondary) !important;
+                color: var(--text-primary) !important;
+            }
+            
+            .pac-item-selected {
+                background-color: var(--bg-secondary) !important;
+                color: var(--text-primary) !important;
+            }
+            
+            .pac-matched {
+                color: var(--text-primary) !important;
+                font-weight: bold;
+            }
+            
+            .pac-item-query {
+                color: var(--text-secondary) !important;
+            }
+        }
     </style>
 </head>
 <body>
     <div id="map"></div>
     
     <div class="controls">
-        <h3>🏗️ London Beauty Heatmap</h3>
         <div class="input-wrap">
             <input type="text" id="addressInput" placeholder="Enter London address and press Enter...">
             <span id="addressSpinner" class="spinner"></span>
@@ -220,6 +294,10 @@
     <!-- Deck.gl - Use confirmed working CDN -->
     <script src="https://unpkg.com/deck.gl@8/dist.min.js"></script>
     
+    <!-- Google Extended Component Library (for gmpx-place-picker) -->
+    <script type="module" src="https://unpkg.com/@googlemaps/extended-component-library@0.6"></script>
+
     <script type="module" src="./app.js"></script>
 </body>
 </html>
+ 

@@ -3,6 +3,9 @@ const CONFIG = {
     // Local development configuration - no API keys needed in frontend
     API_BASE_URL: 'http://localhost:8787', // Local Cloudflare Worker
     
+    // Debug settings - can be enabled via URL parameter ?debug=true
+    DEBUG: new URLSearchParams(window.location.search).get('debug') === 'true',
+    
     // Map settings
     INITIAL_CENTER: { lat: 51.5074, lng: -0.1278 }, // London
     INITIAL_ZOOM: 12,
@@ -41,6 +44,16 @@ const CONFIG = {
             MEDIUM: 1.5,         // Medium hexagon line width
             SMALL: 1             // Small hexagon line width (unused)
         }
+    },
+    
+    // Search UI
+    SEARCH_PLACEHOLDER: 'Enter London address and press Enter...'
+};
+
+// Debug utility
+const debug = (...args) => {
+    if (CONFIG.DEBUG) {
+        console.log('[DEBUG]', ...args);
     }
 };
 
@@ -56,9 +69,27 @@ class BeautyHeatmap {
         this.pinAtlasUrl = null;
         this.pinAtlasMapping = null;
         this.externalPinSvg = null;
+        
+        // Show debug UI if debug mode is enabled
+        this.initDebugUI();
         this.lastVisibility = null;
         
         this.init();
+    }
+    
+    initDebugUI() {
+        if (CONFIG.DEBUG) {
+            // Show debug UI elements
+            const statsElement = document.getElementById('stats');
+            const zoomInfoElement = document.getElementById('zoomInfo');
+            
+            if (statsElement) {
+                statsElement.style.display = 'block';
+            }
+            if (zoomInfoElement) {
+                zoomInfoElement.style.display = 'block';
+            }
+        }
     }
     
     async loadGoogleMaps() {
@@ -186,13 +217,68 @@ class BeautyHeatmap {
         const input = document.getElementById('addressInput');
         if (!window.google || !google.maps.places) return;
         
-        // Try new PlaceAutocompleteElement if available, fallback to legacy
+        // Prefer PlaceAutocompleteElement for better dark mode theming control
         if (google.maps.places.PlaceAutocompleteElement) {
             this.setupNewAutocomplete(input);
+        } else if (window.customElements && window.customElements.get && window.customElements.get('gmpx-place-picker')) {
+            // Fallback to Place Picker if PlaceAutocompleteElement not available
+            this.setupPlacePicker(input);
         } else {
+            // Fallback to legacy input
             this.setupLegacyAutocomplete(input);
         }
+        
+        // Ensure placeholder text is applied when empty (legacy only)
+        this.applySearchPlaceholder();
     }
+
+    setupPlacePicker(input) {
+        // Hide legacy input
+        input.style.display = 'none';
+        
+        // Create the extended component
+        const picker = document.createElement('gmpx-place-picker');
+        picker.id = 'place-picker';
+        picker.setAttribute('placeholder', CONFIG.SEARCH_PLACEHOLDER);
+        picker.style.display = 'block';
+        picker.style.width = '100%';
+        picker.style.margin = '5px 0';
+        picker.setAttribute('aria-label', CONFIG.SEARCH_PLACEHOLDER);
+        
+        // Insert before hidden input
+        input.parentNode.insertBefore(picker, input);
+        
+        // Listen for place selection
+        const onPlaceChosen = async (event) => {
+            try {
+                const detail = event.detail || {};
+                let place = detail.place || detail.value || null;
+                if (!place && detail.prediction && typeof detail.prediction.toPlace === 'function') {
+                    place = detail.prediction.toPlace();
+                    await place.fetchFields?.({ fields: ['displayName', 'formattedAddress', 'location'] });
+                }
+                if (place?.fetchFields) {
+                    await place.fetchFields({ fields: ['displayName', 'formattedAddress', 'location'] });
+                }
+                if (place && place.location) {
+                    this.map.panTo(place.location);
+                    this.map.setZoom(17);
+                    // Mirror into hidden input for addPoint flow
+                    input.value = place.formattedAddress || place.displayName || '';
+                    // Create placeholder and submit
+                    this.createPlaceholderMarker(place.location);
+                    this.addPoint();
+                }
+            } catch (_) {}
+        };
+        picker.addEventListener('gmpx-placechange', onPlaceChosen);
+        picker.addEventListener('gmp-select', onPlaceChosen);
+        
+        // Store reference
+        this.placePickerElement = picker;
+    }
+
+    // Note: Place Picker path removed; using official PlaceAutocompleteElement instead
     
     setupNewAutocomplete(input) {
         // Detect theme preference
@@ -208,7 +294,8 @@ class BeautyHeatmap {
         // Replace the input with the new component and style it to match theme
         input.style.display = 'none';
         autocompleteElement.id = 'place-autocomplete';
-        autocompleteElement.placeholder = 'Enter London address and press Enter...';
+        // Accessible name via ARIA; placeholder is not supported by this component
+        autocompleteElement.setAttribute('aria-label', CONFIG.SEARCH_PLACEHOLDER);
         
         // Apply CSS custom properties for theming
         const styles = getComputedStyle(document.documentElement);
@@ -263,8 +350,17 @@ class BeautyHeatmap {
                 // Stop observing after 5 seconds to avoid performance issues
                 setTimeout(() => observer.disconnect(), 5000);
             }
+
+            // Best-effort: ensure inner input shows placeholder when empty
+            try {
+                const innerInput = autocompleteElement.shadowRoot?.querySelector('input');
+                if (innerInput && (!autocompleteElement.value || autocompleteElement.value.trim() === '')) {
+                    innerInput.setAttribute('placeholder', CONFIG.SEARCH_PLACEHOLDER);
+                }
+            } catch (_) {}
         }, 1000);
         
+        // Insert the component before the hidden input
         input.parentNode.insertBefore(autocompleteElement, input);
         
         // Listen for place selection from dropdown
@@ -306,8 +402,14 @@ class BeautyHeatmap {
             }
         });
         
-        // Store reference for addPoint method
+        // Store reference
         this.autocompleteElement = autocompleteElement;
+
+        // Maintain ARIA label; no placeholder management needed
+        autocompleteElement.addEventListener('input', () => { /* no-op for placeholder */ });
+        autocompleteElement.addEventListener('blur', () => { /* no-op */ });
+        autocompleteElement.addEventListener('focus', () => { /* no-op */ });
+        autocompleteElement.addEventListener('gmp-select', () => { /* no-op */ });
     }
     
     setupThemeListener() {
@@ -320,24 +422,15 @@ class BeautyHeatmap {
                 });
             }
             
-            // Update autocomplete theme if using new component
-            if (this.autocompleteElement) {
-                const styles = getComputedStyle(document.documentElement);
-                const bgColor = styles.getPropertyValue('--bg-primary').trim();
-                const textColor = styles.getPropertyValue('--text-primary').trim();
-                const borderColor = styles.getPropertyValue('--border-color').trim();
-                
-                this.autocompleteElement.style.backgroundColor = bgColor;
-                this.autocompleteElement.style.color = textColor;
-                this.autocompleteElement.style.border = `1px solid ${borderColor}`;
-                this.autocompleteElement.style.colorScheme = e.matches ? 'dark' : 'light';
-            }
+            // Autocomplete widget styling is now handled by CSS (color-scheme)
         });
     }
     
     setupLegacyAutocomplete(input) {
         // Make sure the input is visible
         input.style.display = 'block';
+        // Apply consistent placeholder
+        input.placeholder = CONFIG.SEARCH_PLACEHOLDER;
         
         const autocomplete = new google.maps.places.Autocomplete(input, {
             fields: ['formatted_address', 'geometry', 'place_id'],
@@ -353,7 +446,23 @@ class BeautyHeatmap {
                 this.addPoint();
             }
         });
+
+        // Keep placeholder visible when empty
+        input.addEventListener('input', () => this.applySearchPlaceholder());
+        input.addEventListener('blur', () => this.applySearchPlaceholder());
     }
+
+    applySearchPlaceholder() {
+        // Only relevant for legacy input; new component does not support custom placeholder
+        const input = document.getElementById('addressInput');
+        if (input && (!input.value || input.value.trim() === '')) {
+            input.placeholder = CONFIG.SEARCH_PLACEHOLDER;
+        }
+        // Keep place picker overlay in sync
+        this.updatePlacePickerPlaceholder?.();
+    }
+
+    // Place Picker removed; no-op
     
     setupEventListeners() {
         // Map events
@@ -1477,9 +1586,12 @@ class BeautyHeatmap {
         const addressInput = document.getElementById('addressInput');
         const loading = document.getElementById('loading');
         
-        // Get address from either new autocomplete element or legacy input
+        // Get address from place picker, new autocomplete, or legacy input
         let address;
-        if (this.autocompleteElement) {
+        if (this.placePickerElement) {
+            address = (this.placePickerElement.valueText || this.placePickerElement.value || '').trim();
+            if (!address) address = addressInput.value.trim();
+        } else if (this.autocompleteElement) {
             // New autocomplete - get from the autocomplete element's value
             address = this.autocompleteElement.value?.trim() || addressInput.value.trim();
         } else {
@@ -1536,13 +1648,14 @@ class BeautyHeatmap {
                 if (this.autocompleteElement) {
                     this.autocompleteElement.value = '';
                 }
+                this.applySearchPlaceholder();
                 
-                // Remove placeholder marker now that we have the real result
-                this.removePlaceholderMarker();
-                
-                // Refresh data to show the new point with proper styling
+                // Refresh data to show the new point with proper styling first
                 await this.refreshData();
                 await this.loadStats();
+                
+                // Remove placeholder marker after data has been refreshed and rendered
+                this.removePlaceholderMarker();
 
                 if (result.point) {
                     const newPoint = result.point;
