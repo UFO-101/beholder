@@ -14,26 +14,14 @@ const CONFIG = {
     HEATMAP_ZOOM_THRESHOLD: 16, // Show heatmap up to and including zoom 15
     MAX_POINTS_TO_SHOW: 5000,
     
-    // Colors for beauty scores
-    BEAUTY_COLORS: {
-        1: [255, 0, 0, 180],     // Red - Bad
-        2: [255, 0, 0, 180],
-        3: [255, 128, 0, 180],   // Orange - Lackluster  
-        4: [255, 128, 0, 180],
-        5: [255, 255, 0, 180],   // Yellow - Okay
-        6: [255, 255, 0, 180],
-        7: [128, 255, 0, 180],   // Light Green - Good
-        8: [128, 255, 0, 180],
-        9: [0, 255, 0, 180],     // Green - Excellent
-        10: [0, 255, 0, 180]
-    },
-    
     // Animation settings
     ANIMATION: {
         FADE_DURATION: 800,      // Duration of fade in/out animations in ms
         DEBOUNCE_DELAY: 150,     // Delay for debouncing map updates in ms
         MIN_ALPHA: 0,            // Minimum alpha for fade animations
-        HEX_BASE_ALPHA: 150,     // Base alpha for hexagon colors
+        HEX_BASE_ALPHA: 100,     // Base alpha for hexagon colors
+        HEX_EMPTY_ALPHA: 30,     // Alpha for empty hex display
+        POINT_BASE_ALPHA: 255,   // Base alpha for pins/text
         LINE_OPACITY: {
             LARGE: 160,          // Large hexagon line opacity
             MEDIUM: 130,         // Medium hexagon line opacity
@@ -47,7 +35,100 @@ const CONFIG = {
     },
     
     // Search UI
-    SEARCH_PLACEHOLDER: 'Enter London address and press Enter...'
+    SEARCH_PLACEHOLDER: 'Enter address',
+
+    // Autocomplete/pan behaviors
+    AUTOCOMPLETE: {
+        PAN_DELAY_MS: 100,       // Delay after selection before panning (ms)
+        GEOCODER_PAN_DELAY_MS: 50
+    },
+
+    // API
+    API: {
+        TIMEOUT_MS: 60000
+    },
+
+    // UI thresholds
+    UI: {
+        TEXT_ZOOM_THRESHOLD: 18
+    },
+
+    // Map buffers for bbox expansion
+    MAP: {
+        BUFFER_DEFAULT: 0.01,
+        BUFFER_Z13_PLUS: 0.005,
+        BUFFER_Z10_PLUS: 0.015,
+        BUFFER_LOW: 0.02
+    },
+
+    // H3 resolution zoom ranges
+    H3: {
+        R7_MIN_ZOOM: 9,
+        R7_MAX_ZOOM: 12,
+        R9_MIN_ZOOM: 13,
+        R9_MAX_ZOOM: 15
+    },
+
+    // Pin icon dimensions and sizing
+    ICONS: {
+        INTRINSIC_WIDTH: 512,
+        INTRINSIC_HEIGHT: 512,
+        ANCHOR_X: 256,
+        ANCHOR_Y: 512,
+        SIZE_PX: 64,
+        SIZE_MIN: 56,
+        SIZE_MAX: 72,
+        PICKING_RADIUS: 6
+    },
+
+    // Text icon overlay settings
+    TEXT_ICON: {
+        ICON_WIDTH: 64,
+        ICON_HEIGHT: 64,
+        ANCHOR_X: 32,
+        ANCHOR_Y: 32,
+        SIZE_PX: 24,
+        SIZE_MIN: 18,
+        SIZE_MAX: 30,
+        PIXEL_OFFSET_Y: -28
+    },
+
+    // Spinner overlay settings
+    SPINNER: {
+        CONTAINER_SIZE: 24,
+        INNER_SIZE: 12,
+        BORDER_WIDTH: 2,
+        OFFSET_Y: 30,
+        OFFSET_X: 0,
+        TOP_MARGIN: 4,
+        SPEED_S: 1
+    },
+
+    // Beauty thresholds (normalized 0..1) for hex coloring
+    BEAUTY_THRESHOLDS: [0.2, 0.4, 0.6, 0.8],
+
+    // Color palettes
+    COLORS: {
+        // Hexagon fill colors from worst -> best (RGB only; alpha applied at runtime)
+        HEX: [
+            [255, 0, 0],      // Red (bad)
+            [255, 128, 0],    // Orange (lackluster)
+            [255, 255, 0],    // Yellow (okay)
+            [128, 255, 0],    // Light Green (good)
+            [0, 255, 0]       // Green (excellent)
+        ],
+        // Marker pin colors by score buckets
+        MARKER: {
+            BUCKETS: [2, 4, 6, 8, 10],
+            COLORS: [
+                [255, 51, 51],   // <=2
+                [255, 136, 0],   // <=4
+                [255, 221, 0],   // <=6
+                [136, 255, 0],   // <=8
+                [0, 255, 68]     // <=10
+            ]
+        }
+    }
 };
 
 // Debug utility
@@ -66,8 +147,6 @@ class BeautyHeatmap {
         this.showHeatmap = true;
         this.showPoints = true;
         this.iconCache = new Map();
-        this.pinAtlasUrl = null;
-        this.pinAtlasMapping = null;
         this.externalPinSvg = null;
         this.textIconCache = new Map();
         
@@ -180,7 +259,6 @@ class BeautyHeatmap {
                     }
                     
                     const cursor = isDragging ? 'grabbing' : (isHovering ? 'pointer' : 'default');
-                    this.lastCursorState = cursor;
                     return cursor;
                 }
             });
@@ -358,7 +436,7 @@ class BeautyHeatmap {
                             // Automatically submit the selected address
                             this.addPoint();
                         }
-                    }, 100);
+                    }, CONFIG.AUTOCOMPLETE.PAN_DELAY_MS);
                 } catch (error) {
                     console.error('Error handling place selection:', error);
                 }
@@ -461,12 +539,6 @@ class BeautyHeatmap {
             // Check if we need to trigger fade-out before loading new data
             const newZoom = this.map.getZoom();
             const newResolution = this.getH3Resolution(newZoom);
-            const newShowHexagons = newZoom < CONFIG.HEATMAP_ZOOM_THRESHOLD;
-            const newShowPoints = newZoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD;
-            
-            // Simplified approach: Just log zoom changes, handle fade-out in updateVisualization
-            if (this.lastZoom !== undefined && newZoom !== this.lastZoom) {
-            }
             
             this.lastZoom = newZoom;
             const bounds = this.map.getBounds();
@@ -488,13 +560,13 @@ class BeautyHeatmap {
             
             // Add buffer to prevent hexagons from disappearing at screen edges
             // Buffer size depends on zoom level and hexagon resolution
-            let buffer = 0.01; // Default buffer in degrees
+            let buffer = CONFIG.MAP.BUFFER_DEFAULT; // Default buffer in degrees
             if (zoom >= 13) {
-                buffer = 0.005; // Smaller buffer for smaller hexagons at high zoom
+                buffer = CONFIG.MAP.BUFFER_Z13_PLUS; // Smaller buffer for smaller hexagons at high zoom
             } else if (zoom >= 10) {
-                buffer = 0.015; // Medium buffer for medium zoom
+                buffer = CONFIG.MAP.BUFFER_Z10_PLUS; // Medium buffer for medium zoom
             } else {
-                buffer = 0.02; // Larger buffer for large hexagons at low zoom
+                buffer = CONFIG.MAP.BUFFER_LOW; // Larger buffer for large hexagons at low zoom
             }
             
             const bbox = [
@@ -661,7 +733,6 @@ class BeautyHeatmap {
         
         // Update UI components
         this.updateZoomInfo(zoom);
-        this.updateLastUpdateTime();
         
         // Calculate visibility states
         const visibility = this.calculateVisibility(zoom, resolution);
@@ -682,16 +753,12 @@ class BeautyHeatmap {
         this.overlay.setProps({ layers });
     }
     
-    updateLastUpdateTime() {
-        if (!this.lastUpdateTime || (Date.now() - this.lastUpdateTime) > 100) {
-            this.lastUpdateTime = Date.now();
-        }
-    }
+    
     
     calculateVisibility(zoom, resolution) {
         const showHexagons = zoom < CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showHeatmap && this.heatData.length > 0 && resolution !== null;
         const showPoints = zoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD && this.showPoints && this.pointData.length > 0;
-        const showText = showPoints && zoom >= 18; // Text only shows at zoom 18+
+        const showText = showPoints && zoom >= CONFIG.UI.TEXT_ZOOM_THRESHOLD; // Text only shows at configured zoom
         
         return {
             showHexagons,
@@ -901,7 +968,6 @@ class BeautyHeatmap {
         }
         
         const { IconLayer, TextLayer } = this.getDeckGLLayers();
-        const pointAlpha = visibility.showPoints ? 255 : 0;
         
         // Load external SVG icon once and recolor per score
         await this.ensureExternalPin();
@@ -1002,7 +1068,7 @@ class BeautyHeatmap {
     
     calculatePointColor(d, showPoints) {
         const now = Date.now();
-        const baseAlpha = 255;
+        const baseAlpha = CONFIG.ANIMATION.POINT_BASE_ALPHA;
         const TRANSITION_DURATION = CONFIG.ANIMATION.FADE_DURATION;
         
         // Handle fade-out first (takes priority)
@@ -1032,7 +1098,7 @@ class BeautyHeatmap {
     
     calculateTextColor(d, showText) {
         const now = Date.now();
-        const baseAlpha = 255;
+        const baseAlpha = CONFIG.ANIMATION.POINT_BASE_ALPHA;
         const TRANSITION_DURATION = CONFIG.ANIMATION.FADE_DURATION;
         
         // Handle placeholder points
@@ -1100,54 +1166,22 @@ class BeautyHeatmap {
             getIcon: d => ({
                 url: this.getExternalPinForScore(d.beauty),
                 // Match the intrinsic SVG dimensions to ensure correct anchoring
-                width: 512,
-                height: 512,
-                anchorX: 256,
-                anchorY: 512
+                width: CONFIG.ICONS.INTRINSIC_WIDTH,
+                height: CONFIG.ICONS.INTRINSIC_HEIGHT,
+                anchorX: CONFIG.ICONS.ANCHOR_X,
+                anchorY: CONFIG.ICONS.ANCHOR_Y
             }),
             sizeUnits: 'pixels',
-            getSize: 64,
-            sizeMinPixels: 56,
-            sizeMaxPixels: 72,
+            getSize: CONFIG.ICONS.SIZE_PX,
+            sizeMinPixels: CONFIG.ICONS.SIZE_MIN,
+            sizeMaxPixels: CONFIG.ICONS.SIZE_MAX,
             pickable: true,
-            pickingRadius: 6,
+            pickingRadius: CONFIG.ICONS.PICKING_RADIUS,
             parameters: { depthTest: false },
             onHover: this.onPointHover.bind(this),
             onClick: this.onPointClick.bind(this),
             getColor: d => this.calculatePointColor(d, showPoints),
             updateTriggers: { getColor: [this.pointData.length, showPoints, this.animationTrigger] }
-        });
-    }
-    
-    createPointTextLayer(TextLayer, showText) {
-        const getPosition = d => [parseFloat(d.lng), parseFloat(d.lat)];
-        
-        return new TextLayer({
-            id: 'beauty-pin-labels',
-            data: this.pointData,
-            getPosition,
-            getId: d => d.id || d.place_id || `${d.lat}-${d.lng}`,
-            // Hide label for non-numeric/placeholder points
-            getText: d => {
-                const num = parseFloat(d.beauty);
-                return Number.isFinite(num) ? `${Math.round(num)}` : '';
-            },
-            getColor: d => this.calculateTextColor(d, showText),
-            getSize: 18,
-            sizeUnits: 'pixels',
-            sizeMinPixels: 18,
-            sizeMaxPixels: 18,
-            textAnchor: 'middle',
-            alignmentBaseline: 'center',
-            billboard: true,
-            fontFamily: 'Arial Black, Arial, sans-serif',
-            fontSettings: { sdf: false },
-            getPixelOffset: [0, -24],
-            pickable: false,
-            parameters: { depthTest: false },
-            updateTriggers: { 
-                getColor: [this.pointData.length, showText, this.animationTrigger]
-            }
         });
     }
     
@@ -1175,17 +1209,17 @@ class BeautyHeatmap {
                 
                 return {
                     url: iconUrl,
-                    width: 64,
-                    height: 64,
-                    anchorX: 32,
-                    anchorY: 32
+                    width: CONFIG.TEXT_ICON.ICON_WIDTH,
+                    height: CONFIG.TEXT_ICON.ICON_HEIGHT,
+                    anchorX: CONFIG.TEXT_ICON.ANCHOR_X,
+                    anchorY: CONFIG.TEXT_ICON.ANCHOR_Y
                 };
             },
             sizeUnits: 'pixels',
-            getSize: 24,
-            sizeMinPixels: 18,
-            sizeMaxPixels: 30,
-            getPixelOffset: [0, -28],
+            getSize: CONFIG.TEXT_ICON.SIZE_PX,
+            sizeMinPixels: CONFIG.TEXT_ICON.SIZE_MIN,
+            sizeMaxPixels: CONFIG.TEXT_ICON.SIZE_MAX,
+            getPixelOffset: [0, CONFIG.TEXT_ICON.PIXEL_OFFSET_Y],
             pickable: false,
             parameters: { 
                 depthTest: false,
@@ -1243,11 +1277,6 @@ class BeautyHeatmap {
         `;
     }
     
-    getBeautyColor(beauty) {
-        const score = Math.round(Math.max(1, Math.min(10, beauty || 5)));
-        return CONFIG.BEAUTY_COLORS[score] || [128, 128, 128, 180];
-    }
-    
     getBeautyIconColor(beauty) {
         const score = Math.max(1, Math.min(10, beauty || 5));
         
@@ -1262,30 +1291,29 @@ class BeautyHeatmap {
     getBeautyHexColor(avgBeauty) {
         // Handle empty hexagons (make them transparent)
         if (!avgBeauty || avgBeauty === 0) {
-            return [128, 128, 128, 30]; // Very transparent gray
+            return [128, 128, 128, CONFIG.ANIMATION.HEX_EMPTY_ALPHA]; // Very transparent gray
         }
         
         // Color based on beauty score (1-10 scale)
         const normalized = Math.max(1, Math.min(10, avgBeauty)) / 10; // 0.1 to 1.0
-        
         const alpha = CONFIG.ANIMATION.HEX_BASE_ALPHA;
-        if (normalized <= 0.2) {
-            return [255, 0, 0, alpha];     // Red (bad)
-        } else if (normalized <= 0.4) {
-            return [255, 128, 0, alpha];   // Orange (lackluster)
-        } else if (normalized <= 0.6) {
-            return [255, 255, 0, alpha];   // Yellow (okay)
-        } else if (normalized <= 0.8) {
-            return [128, 255, 0, alpha];   // Light Green (good)
-        } else {
-            return [0, 255, 0, alpha];     // Green (excellent)
-        }
+        const [t1, t2, t3, t4] = CONFIG.BEAUTY_THRESHOLDS;
+        const palette = CONFIG.COLORS.HEX;
+
+        let idx = 4; // best by default
+        if (normalized <= t1) idx = 0;
+        else if (normalized <= t2) idx = 1;
+        else if (normalized <= t3) idx = 2;
+        else if (normalized <= t4) idx = 3;
+
+        const [r, g, b] = palette[idx] || [0, 255, 0];
+        return [r, g, b, alpha];
     }
     
     getH3Resolution(zoom) {
-        if (zoom < 9) return null;               // Below zoom 9: no hexagons
-        if (zoom >= 9 && zoom <= 12) return 7;  // Large R7 hexagons
-        if (zoom >= 13 && zoom <= 15) return 9; // Medium R9 hexagons (now includes zoom 15)
+        if (zoom < CONFIG.H3.R7_MIN_ZOOM) return null;               // Below min zoom: no hexagons
+        if (zoom >= CONFIG.H3.R7_MIN_ZOOM && zoom <= CONFIG.H3.R7_MAX_ZOOM) return 7;  // Large R7 hexagons
+        if (zoom >= CONFIG.H3.R9_MIN_ZOOM && zoom <= CONFIG.H3.R9_MAX_ZOOM) return 9; // Medium R9 hexagons
         return null; // Zoom 16+ will show individual points
     }
 
@@ -1313,69 +1341,6 @@ class BeautyHeatmap {
 
         this.iconCache.set(rounded, svg);
         return svg;
-    }
-
-    // Build a small sprite atlas with 10 color-coded pins once
-    ensurePinAtlas() {
-        if (this.pinAtlasUrl && this.pinAtlasMapping) return;
-
-        const canvas = document.createElement('canvas');
-        const cols = 5;
-        const rows = 2;
-        const cellW = 48;
-        const cellH = 64;
-        canvas.width = cols * cellW;
-        canvas.height = rows * cellH;
-        const ctx = canvas.getContext('2d');
-
-        const drawPin = (x, y, fill) => {
-            ctx.save();
-            ctx.translate(x + cellW / 2, y);
-            // Shadow
-            ctx.shadowColor = 'rgba(0,0,0,0.35)';
-            ctx.shadowBlur = 6;
-            ctx.shadowOffsetY = 2;
-            // Body
-            ctx.beginPath();
-            // simple rounded pin path
-            ctx.moveTo(0, 6);
-            ctx.arc(0, 22, 18, Math.PI, 0);
-            ctx.lineTo(12, 46);
-            ctx.lineTo(0, 64);
-            ctx.lineTo(-12, 46);
-            ctx.closePath();
-            ctx.fillStyle = fill;
-            ctx.fill();
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-            ctx.stroke();
-            // Subtle glossy highlight at top (very low alpha)
-            /*
-            ctx.beginPath();
-            ctx.ellipse(0, 16, 10, 6, 0, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,255,255,0.15)';
-            ctx.fill();
-            */
-            ctx.restore();
-        };
-
-        const colors = (score) => {
-            const [r, g, b] = this.getBeautyIconColor(score);
-            return `rgb(${r},${g},${b})`;
-        };
-
-        this.pinAtlasMapping = {};
-        for (let s = 1; s <= 10; s++) {
-            const idx = s - 1;
-            const col = idx % cols;
-            const row = Math.floor(idx / cols);
-            const x = col * cellW;
-            const y = row * cellH;
-            drawPin(x, y, colors(s));
-            this.pinAtlasMapping[`s${s}`] = { x, y, width: cellW, height: cellH, anchorY: cellH };
-        }
-
-        this.pinAtlasUrl = canvas.toDataURL();
     }
 
     async ensureExternalPin() {
@@ -1638,8 +1603,8 @@ class BeautyHeatmap {
             onAdd() {
                 const div = document.createElement('div');
                 div.style.position = 'absolute';
-                div.style.width = '24px';
-                div.style.height = '24px';
+                div.style.width = `${CONFIG.SPINNER.CONTAINER_SIZE}px`;
+                div.style.height = `${CONFIG.SPINNER.CONTAINER_SIZE}px`;
                 // Center horizontally; vertical position handled via pixel offset in draw()
                 div.style.transform = 'translate(-50%, 0%)';
                 // Center the inner spinner perfectly within this 24x24 box
@@ -1649,13 +1614,13 @@ class BeautyHeatmap {
                 div.style.pointerEvents = 'none';
                 div.innerHTML = `
                     <div style="
-                        width: 12px; 
-                        height: 12px; 
-                        border: 2px solid #f3f3f3;
-                        border-top: 2px solid #4285f4;
+                        width: ${CONFIG.SPINNER.INNER_SIZE}px; 
+                        height: ${CONFIG.SPINNER.INNER_SIZE}px; 
+                        border: ${CONFIG.SPINNER.BORDER_WIDTH}px solid #f3f3f3;
+                        border-top: ${CONFIG.SPINNER.BORDER_WIDTH}px solid #4285f4;
                         border-radius: 50%;
-                        animation: spin 1s linear infinite;
-                        margin: 4px auto 0 auto;
+                        animation: spin ${CONFIG.SPINNER.SPEED_S}s linear infinite;
+                        margin: ${CONFIG.SPINNER.TOP_MARGIN}px auto 0 auto;
                     "></div>
                 `;
                 
@@ -1686,17 +1651,11 @@ class BeautyHeatmap {
         
         // Offsets tuned for a ~64px pin; adjust if pin size changes
         // Use zero X offset now that inner spinner is centered precisely
-        this.spinnerOverlay = new SpinnerOverlay(location, 30, 0);
+        this.spinnerOverlay = new SpinnerOverlay(location, CONFIG.SPINNER.OFFSET_Y, CONFIG.SPINNER.OFFSET_X);
         this.spinnerOverlay.setMap(this.map);
     }
     
     removePlaceholderMarker() {
-        // Remove placeholder marker
-        if (this.placeholderMarker) {
-            this.placeholderMarker.setMap(null);
-            this.placeholderMarker = null;
-        }
-        
         // Remove spinner overlay
         if (this.spinnerOverlay) {
             this.spinnerOverlay.setMap(null);
@@ -1717,7 +1676,6 @@ class BeautyHeatmap {
 
     async addPoint() {
         const addressInput = document.getElementById('addressInput');
-        const loading = document.getElementById('loading');
         
         // Get address from autocomplete element or fallback to input
         let address;
@@ -1753,14 +1711,14 @@ class BeautyHeatmap {
                                 this.map.setZoom(17);
                                 this.createPlaceholderMarker(loc);
                             }
-                        }, 50);
+                        }, CONFIG.AUTOCOMPLETE.GEOCODER_PAN_DELAY_MS);
                     }
                 });
             } catch (_) {}
 
             // Add a client-side timeout so the UI doesn't hang forever
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000);
+            const timeoutId = setTimeout(() => controller.abort(), CONFIG.API.TIMEOUT_MS);
 
             const response = await fetch(`${CONFIG.API_BASE_URL}/point`, {
                 method: 'POST',
