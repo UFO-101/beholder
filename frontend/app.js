@@ -208,7 +208,7 @@ class BeautyHeatmap {
         // Replace the input with the new component and style it to match theme
         input.style.display = 'none';
         autocompleteElement.id = 'place-autocomplete';
-        autocompleteElement.placeholder = 'Enter London address...';
+        autocompleteElement.placeholder = 'Enter London address and press Enter...';
         
         // Apply CSS custom properties for theming
         const styles = getComputedStyle(document.documentElement);
@@ -230,16 +230,79 @@ class BeautyHeatmap {
             autocompleteElement.style.colorScheme = 'dark';
         }
         
+        // Hide the clear button using CSS - try multiple approaches for shadow DOM
+        const style = document.createElement('style');
+        style.textContent = `
+            gmp-place-autocomplete::part(clear-button) {
+                display: none !important;
+            }
+            gmp-place-autocomplete button.clear-button {
+                display: none !important;
+            }
+            gmp-place-autocomplete button[aria-label="Clear input"] {
+                display: none !important;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        // Also try to hide it via JavaScript after the element is fully loaded
+        setTimeout(() => {
+            const clearButton = autocompleteElement.shadowRoot?.querySelector('button.clear-button') || 
+                              autocompleteElement.shadowRoot?.querySelector('button[aria-label="Clear input"]');
+            if (clearButton) {
+                clearButton.style.display = 'none';
+            } else {
+                // If shadow DOM is closed, try observing for changes in the autocomplete element
+                const observer = new MutationObserver(() => {
+                    // Try to find and hide clear buttons that might appear
+                    const allButtons = document.querySelectorAll('button[aria-label="Clear input"]');
+                    allButtons.forEach(btn => btn.style.display = 'none');
+                });
+                observer.observe(document.body, { childList: true, subtree: true });
+                
+                // Stop observing after 5 seconds to avoid performance issues
+                setTimeout(() => observer.disconnect(), 5000);
+            }
+        }, 1000);
+        
         input.parentNode.insertBefore(autocompleteElement, input);
         
-        // Listen for place selection
-        autocompleteElement.addEventListener('gmp-placeselect', (event) => {
-            const place = event.place;
-            if (place && place.geometry && place.geometry.location) {
-                this.map.panTo(place.geometry.location);
-                this.map.setZoom(16);
+        // Listen for place selection from dropdown
+        autocompleteElement.addEventListener('gmp-select', async (event) => {
+            const place = event.placePrediction.toPlace();
+            await place.fetchFields({
+                fields: ['displayName', 'formattedAddress', 'location']
+            });
+            
+            if (place.location) {
+                this.map.panTo(place.location);
+                this.map.setZoom(17);
                 // Update the hidden input for form compatibility
-                input.value = place.formattedAddress || '';
+                input.value = place.formattedAddress || place.displayName || '';
+                // Create placeholder marker and start loading process
+                this.createPlaceholderMarker(place.location);
+                // Automatically submit the selected address
+                this.addPoint();
+            }
+        });
+        
+        // Handle Enter key submission
+        autocompleteElement.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                // Check if dropdown is visible - if so, let it handle the selection
+                const dropdown = document.querySelector('.pac-container');
+                if (dropdown && window.getComputedStyle(dropdown).display !== 'none') {
+                    // Dropdown is visible, let it handle the enter key
+                    return;
+                }
+                
+                // No dropdown visible, treat as manual submission
+                e.preventDefault();
+                const currentValue = autocompleteElement.value;
+                if (currentValue && currentValue.trim()) {
+                    input.value = currentValue.trim();
+                    this.addPoint();
+                }
             }
         });
         
@@ -273,6 +336,9 @@ class BeautyHeatmap {
     }
     
     setupLegacyAutocomplete(input) {
+        // Make sure the input is visible
+        input.style.display = 'block';
+        
         const autocomplete = new google.maps.places.Autocomplete(input, {
             fields: ['formatted_address', 'geometry', 'place_id'],
             componentRestrictions: { country: 'gb' },
@@ -283,6 +349,8 @@ class BeautyHeatmap {
             if (place && place.geometry && place.geometry.location) {
                 this.map.panTo(place.geometry.location);
                 this.map.setZoom(16);
+                // Automatically submit the selected address
+                this.addPoint();
             }
         });
     }
@@ -336,12 +404,11 @@ class BeautyHeatmap {
             document.addEventListener('pointerdown', this.boundDocumentPointerDown, true);
         }
         
-        // Control events
-        document.getElementById('addPointBtn').addEventListener('click', () => this.addPoint());
-        
         // Allow Enter key to submit
-        document.getElementById('addressInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.addPoint();
+        document.getElementById('addressInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                this.addPoint();
+            }
         });
     }
     
@@ -413,6 +480,14 @@ class BeautyHeatmap {
                 const response = await fetch(`${CONFIG.API_BASE_URL}/points?bbox=${bbox}`);
                 if (response.ok) {
                     this.pointData = await response.json();
+                    // Preserve placeholder point (temporary white marker) during fetch refreshes
+                    // so it stays visible until the POST /point completes.
+                    if (this.placeholderPoint && this.map.getZoom() >= CONFIG.HEATMAP_ZOOM_THRESHOLD) {
+                        const hasPlaceholder = this.pointData.some(p => p._isPlaceholder);
+                        if (!hasPlaceholder) {
+                            this.pointData = [...this.pointData, this.placeholderPoint];
+                        }
+                    }
                 } else {
                     console.error('Failed to load point data:', response.status);
                 }
@@ -872,9 +947,11 @@ class BeautyHeatmap {
             getId: d => d.id || d.place_id || `${d.lat}-${d.lng}`,
             getIcon: d => ({
                 url: this.getExternalPinForScore(d.beauty),
-                width: 1024,
-                height: 1024,
-                anchorY: 1024
+                // Match the intrinsic SVG dimensions to ensure correct anchoring
+                width: 512,
+                height: 512,
+                anchorX: 256,
+                anchorY: 512
             }),
             sizeUnits: 'pixels',
             getSize: 64,
@@ -898,7 +975,11 @@ class BeautyHeatmap {
             data: this.pointData,
             getPosition,
             getId: d => d.id || d.place_id || `${d.lat}-${d.lng}`,
-            getText: d => `${Math.round(parseFloat(d.beauty))}`,
+            // Hide label for non-numeric/placeholder points
+            getText: d => {
+                const num = parseFloat(d.beauty);
+                return Number.isFinite(num) ? `${Math.round(num)}` : '';
+            },
             getColor: d => this.calculatePointColor(d, showPoints),
             getSize: 18,
             sizeUnits: 'pixels',
@@ -1105,7 +1186,12 @@ class BeautyHeatmap {
     }
 
     getExternalPinForScore(beauty) {
-        const rounded = Math.max(1, Math.min(10, Math.round(beauty || 5)));
+        // Handle placeholders or non-numeric values: use a white pin
+        const numeric = Number(beauty);
+        if (!Number.isFinite(numeric)) {
+            return this.getExternalPinWithColor('white', 'ext_placeholder');
+        }
+        const rounded = Math.max(1, Math.min(10, Math.round(numeric || 5)));
         const cacheKey = `ext_${rounded}`;
         if (this.iconCache.has(cacheKey)) return this.iconCache.get(cacheKey);
         
@@ -1116,13 +1202,30 @@ class BeautyHeatmap {
         
         const [r, g, b] = this.getBeautyIconColor(rounded);
         const color = `rgb(${r},${g},${b})`;
+        return this.getExternalPinWithColor(color, cacheKey);
+    }
+    
+    getExternalPinWithColor(color, cacheKey = null) {
+        if (cacheKey && this.iconCache.has(cacheKey)) {
+            return this.iconCache.get(cacheKey);
+        }
+        
+        // Fallback if SVG not loaded yet
+        if (!this.externalPinSvg) {
+            return this.getMarkerIcon(5); // neutral fallback
+        }
+        
         // Replace currentColor in the SVG with the desired fill color and remove stroke for crisp edges
         const colored = this.externalPinSvg
             .replace(/currentColor/gi, color)
             .replace(/stroke=".*?"/gi, '')
             .replace(/stroke-width=".*?"/gi, '');
         const url = `data:image/svg+xml;utf8,${encodeURIComponent(colored)}`;
-        this.iconCache.set(cacheKey, url);
+        
+        if (cacheKey) {
+            this.iconCache.set(cacheKey, url);
+        }
+        
         return url;
     }
     
@@ -1250,16 +1353,135 @@ class BeautyHeatmap {
         }
     }
     
+    createPlaceholderMarker(location) {
+        // Remove any existing placeholder
+        this.removePlaceholderMarker();
+        
+        // Add a placeholder point to the data, using the same system as regular points
+        this.placeholderPoint = {
+            id: 'placeholder',
+            lat: location.lat(),
+            lng: location.lng(),
+            beauty: 'placeholder', // Special value to indicate this is a placeholder
+            description: 'Loading...',
+            address: 'Loading...',
+            _isPlaceholder: true
+        };
+        
+        this.pointData.push(this.placeholderPoint);
+        this.updateVisualization();
+        
+        // Also add the spinner overlay
+        this.createSpinnerOverlay(location);
+    }
+    
+    createSpinnerOverlay(location) {
+        // Remove existing spinner overlay
+        if (this.spinnerOverlay) {
+            this.spinnerOverlay.setMap(null);
+        }
+        
+        // Create a custom overlay for the spinner
+        class SpinnerOverlay extends google.maps.OverlayView {
+            constructor(position, offsetY = 30, offsetX = 0) {
+                super();
+                this.position = position;
+                this.div = null;
+                // Vertical offset in pixels so spinner sits inside the pin body (pin ~64px tall)
+                this.offsetY = offsetY;
+                // Small horizontal nudge to match Deck.GL canvas alignment on high-DPI
+                this.offsetX = offsetX;
+            }
+            
+            onAdd() {
+                const div = document.createElement('div');
+                div.style.position = 'absolute';
+                div.style.width = '24px';
+                div.style.height = '24px';
+                // Center horizontally; vertical position handled via pixel offset in draw()
+                div.style.transform = 'translate(-50%, 0%)';
+                // Center the inner spinner perfectly within this 24x24 box
+                div.style.display = 'flex';
+                div.style.alignItems = 'center';
+                div.style.justifyContent = 'center';
+                div.style.pointerEvents = 'none';
+                div.innerHTML = `
+                    <div style="
+                        width: 12px; 
+                        height: 12px; 
+                        border: 2px solid #f3f3f3;
+                        border-top: 2px solid #4285f4;
+                        border-radius: 50%;
+                        animation: spin 1s linear infinite;
+                        margin: 4px auto 0 auto;
+                    "></div>
+                `;
+                
+                this.div = div;
+                const panes = this.getPanes();
+                panes.overlayImage.appendChild(div);
+            }
+            
+            draw() {
+                const overlayProjection = this.getProjection();
+                const position = overlayProjection.fromLatLngToDivPixel(this.position);
+                
+                if (this.div) {
+                    // Use subpixel-accurate X and apply tiny offset to match Deck.GL canvas
+                    this.div.style.left = (position.x + this.offsetX) + 'px';
+                    // Lift the spinner upward to sit inside the marker head (pin tip is at the point)
+                    this.div.style.top = Math.round(position.y - this.offsetY) + 'px';
+                }
+            }
+            
+            onRemove() {
+                if (this.div) {
+                    this.div.parentNode.removeChild(this.div);
+                    this.div = null;
+                }
+            }
+        }
+        
+        // Offsets tuned for a ~64px pin; adjust if pin size changes
+        // Use zero X offset now that inner spinner is centered precisely
+        this.spinnerOverlay = new SpinnerOverlay(location, 30, 0);
+        this.spinnerOverlay.setMap(this.map);
+    }
+    
+    removePlaceholderMarker() {
+        // Remove placeholder marker
+        if (this.placeholderMarker) {
+            this.placeholderMarker.setMap(null);
+            this.placeholderMarker = null;
+        }
+        
+        // Remove spinner overlay
+        if (this.spinnerOverlay) {
+            this.spinnerOverlay.setMap(null);
+            this.spinnerOverlay = null;
+        }
+
+        // Remove placeholder point from point data if present
+        if (this.placeholderPoint) {
+            const hadPlaceholder = this.pointData?.some(p => p._isPlaceholder);
+            this.pointData = (this.pointData || []).filter(p => !p._isPlaceholder);
+            this.placeholderPoint = null;
+            if (hadPlaceholder) {
+                // Refresh visualization so the temporary pin disappears immediately on success/error
+                this.updateVisualization();
+            }
+        }
+    }
+
     async addPoint() {
         const addressInput = document.getElementById('addressInput');
         const loading = document.getElementById('loading');
-        const button = document.getElementById('addPointBtn');
         
         // Get address from either new autocomplete element or legacy input
         let address;
         if (this.autocompleteElement) {
-            // New autocomplete - get from the hidden input that gets updated
-            address = addressInput.value.trim();
+            // New autocomplete - get from the autocomplete element's value
+            address = this.autocompleteElement.value?.trim() || addressInput.value.trim();
         } else {
             // Legacy autocomplete
             address = addressInput.value.trim();
@@ -1272,24 +1494,22 @@ class BeautyHeatmap {
         }
         
         try {
-            // Show loading
-            const spinner = document.getElementById('addressSpinner');
-            if (spinner) spinner.style.display = 'inline-block';
-            button.disabled = true;
+            // No longer show loading spinner in search box since we have placeholder marker
             
             const payload = { address: address };
             
             // Use real AI evaluation on the server (no precomputed values)
             
             
-            // Optimistically fly to the typed address while the server processes
+            // Optimistically fly to the typed address and create placeholder marker while the server processes
             try {
                 const geocoder = new google.maps.Geocoder();
                 geocoder.geocode({ address, componentRestrictions: { country: 'GB' } }, (results, status) => {
                     if (status === 'OK' && results && results[0]) {
                         const loc = results[0].geometry.location;
                         this.map.panTo(loc);
-                        this.map.setZoom(16);
+                        this.map.setZoom(17);
+                        this.createPlaceholderMarker(loc);
                     }
                 });
             } catch (_) {}
@@ -1317,14 +1537,10 @@ class BeautyHeatmap {
                     this.autocompleteElement.value = '';
                 }
                 
-                // Fly to inputted address immediately (optimistic UX) and then to final point location
-                if (result.point) {
-                    const target = { lat: parseFloat(result.point.lat), lng: parseFloat(result.point.lng) };
-                    this.map.panTo(target);
-                    this.map.setZoom(16);
-                }
-
-                // Refresh data and open the info window for this new point
+                // Remove placeholder marker now that we have the real result
+                this.removePlaceholderMarker();
+                
+                // Refresh data to show the new point with proper styling
                 await this.refreshData();
                 await this.loadStats();
 
@@ -1342,11 +1558,8 @@ class BeautyHeatmap {
         } catch (error) {
             console.error('Failed to add point:', error);
             alert(`Failed to add point: ${error.message}`);
-        } finally {
-            // Hide loading
-            const spinner = document.getElementById('addressSpinner');
-            if (spinner) spinner.style.display = 'none';
-            button.disabled = false;
+            // Remove placeholder marker on error
+            this.removePlaceholderMarker();
         }
     }
     
