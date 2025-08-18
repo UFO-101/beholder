@@ -1,7 +1,7 @@
 // Configuration
 const CONFIG = {
     // Local development configuration - no API keys needed in frontend
-    API_BASE_URL: 'http://localhost:8787', // Local Cloudflare Worker
+    API_BASE_URL: 'http://localhost:62737', // Local worker connected to production D1
     
     // Debug settings - can be enabled via URL parameter ?debug=true
     DEBUG: new URLSearchParams(window.location.search).get('debug') === 'true',
@@ -160,12 +160,8 @@ class BeautyHeatmap {
     initDebugUI() {
         if (CONFIG.DEBUG) {
             // Show debug UI elements
-            const statsElement = document.getElementById('stats');
             const zoomInfoElement = document.getElementById('zoomInfo');
             
-            if (statsElement) {
-                statsElement.style.display = 'block';
-            }
             if (zoomInfoElement) {
                 zoomInfoElement.style.display = 'block';
             }
@@ -269,7 +265,6 @@ class BeautyHeatmap {
             this.setupAutocomplete();
             
             // Load initial data
-            await this.loadStats();
             await this.refreshData();
             
             
@@ -520,14 +515,21 @@ class BeautyHeatmap {
             this.lastZoom = newZoom;
             const bounds = this.map.getBounds();
             if (!bounds) {
-                // Fallback: load all data without bbox filtering
-                const pointResponse = await fetch(`${CONFIG.API_BASE_URL}/points?bbox=-180,-90,180,90`);
-                if (pointResponse.ok) {
-                    this.pointData = await pointResponse.json();
-                }
-                const heatResponse = await fetch(`${CONFIG.API_BASE_URL}/heat?bbox=-180,-90,180,90&z=12`);
-                if (heatResponse.ok) {
-                    this.heatData = await heatResponse.json();
+                // Fallback: load data based on zoom level, not both
+                if (newZoom >= CONFIG.HEATMAP_ZOOM_THRESHOLD) {
+                    // High zoom: load points only
+                    const pointResponse = await fetch(`${CONFIG.API_BASE_URL}/points?bbox=-180,-90,180,90`);
+                    if (pointResponse.ok) {
+                        this.pointData = await pointResponse.json();
+                    }
+                    this.heatData = []; // Clear heatmap data
+                } else {
+                    // Low zoom: load heat only  
+                    const heatResponse = await fetch(`${CONFIG.API_BASE_URL}/heat?bbox=-180,-90,180,90&z=${newZoom}`);
+                    if (heatResponse.ok) {
+                        this.heatData = await heatResponse.json();
+                    }
+                    this.pointData = []; // Clear point data
                 }
                 this.updateVisualization();
                 return;
@@ -1691,7 +1693,6 @@ class BeautyHeatmap {
                 
                 // Refresh data to show the new point with proper styling first
                 await this.refreshData();
-                await this.loadStats();
                 
                 // Remove placeholder marker after data has been refreshed and rendered
                 this.removePlaceholderMarker();
@@ -1715,22 +1716,6 @@ class BeautyHeatmap {
         }
     }
     
-    async loadStats() {
-        try {
-            const response = await fetch(`${CONFIG.API_BASE_URL}/stats`);
-            if (response.ok) {
-                const stats = await response.json();
-                const statsElement = document.getElementById('stats');
-                statsElement.innerHTML = `
-                    <div><strong>Total Points:</strong> ${stats.total_points || 0}</div>
-                    <div><strong>Average Beauty:</strong> ${stats.avg_beauty ? parseFloat(stats.avg_beauty).toFixed(1) : 'N/A'}/10</div>
-                    <div><strong>Range:</strong> ${stats.min_beauty || 'N/A'} - ${stats.max_beauty || 'N/A'}</div>
-                `;
-            }
-        } catch (error) {
-            console.error('Failed to load stats:', error);
-        }
-    }
 }
 
 // Initialize the application when the page loads

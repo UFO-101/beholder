@@ -3,10 +3,9 @@ main = "worker.js"
 compatibility_date = "2025-08-03"
 
 [vars]
-# Public variables (will be set via wrangler secret put for sensitive values)
+# Public variables (sensitive values set via wrangler secret put)
 # GEMINI_API_KEY = "set via wrangler secret put"
 # GOOGLE_MAPS_API_KEY = "set via wrangler secret put"
-# DATABASE_URL = "set via wrangler secret put"
 
 # CORS settings
 CORS_ORIGIN = "*"
@@ -16,5 +15,5 @@ MAX_REQUESTS_PER_MINUTE = "60"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "beauty-heatmap"
-database_id = "your-d1-database-id"
+database_name = "beholder"
+database_id = "fed59963-34cd-45fe-8c8a-b3b72141ac77"

@@ -1,14 +1,32 @@
 /**
  * Cloudflare Worker for London Beauty Heatmap API
- * Modular version with organized imports
+ * D1 version with H3 calculations in JavaScript
  */
 
-import { Client } from '@neondatabase/serverless';
 import { geocodeAddress } from './geocoding.js';
 import { getStreetViewImageUrl, hasStreetViewImagery } from './streetview.js';
 import { evaluateAesthetics } from './ai-evaluation.js';
 import { corsResponse, getH3Resolution } from './utils.js';
-import { cellToLatLng } from 'h3-js';
+import { cellToLatLng, latLngToCell } from 'h3-js';
+
+// Helper function to update heat aggregation tables
+async function updateHeatAggregates(db, h3_r7, h3_r9, beauty) {
+  // Update heat_r7 (district level)
+  await db.prepare(`
+    INSERT INTO heat_r7 (h3, sum, cnt) VALUES (?, ?, 1)
+    ON CONFLICT(h3) DO UPDATE SET 
+      sum = sum + excluded.sum,
+      cnt = cnt + 1
+  `).bind(h3_r7, beauty).run();
+
+  // Update heat_r9 (neighborhood level)  
+  await db.prepare(`
+    INSERT INTO heat_r9 (h3, sum, cnt) VALUES (?, ?, 1)
+    ON CONFLICT(h3) DO UPDATE SET 
+      sum = sum + excluded.sum,
+      cnt = cnt + 1
+  `).bind(h3_r9, beauty).run();
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -20,9 +38,7 @@ export default {
     }
 
     try {
-      // Initialize database connection
-      const client = new Client(env.DATABASE_URL);
-      await client.connect();
+      // D1 database is available as env.DB (configured in wrangler.toml)
 
       // POST /point - Add a new point with AI evaluation
       if (request.method === 'POST' && url.pathname === '/point') {
@@ -46,18 +62,15 @@ export default {
 
         // If this place already exists, return it immediately (skip Street View + AI)
         if (geoResult.place_id) {
-          const existingQuery = `
-            SELECT id, place_id, beauty, description, address, lat, lng, model_version, image_url
-            FROM points WHERE place_id = $1
-          `;
-          const existingResult = await client.query(existingQuery, [geoResult.place_id]);
-          if (existingResult.rows.length > 0) {
-            const existing = existingResult.rows[0];
-            await client.end();
+          const existingResult = await env.DB.prepare(
+            'SELECT id, place_id, beauty, description, address, lat, lng, model_version, image_url FROM points WHERE place_id = ?'
+          ).bind(geoResult.place_id).first();
+          
+          if (existingResult) {
             return corsResponse(new Response(
               JSON.stringify({
                 success: true,
-                point: existing,
+                point: existingResult,
                 message: 'Location already exists in database'
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -110,27 +123,36 @@ export default {
           }
         }
 
-        // Insert into database with new simplified schema
-        const insertQuery = `
-          INSERT INTO points (place_id, beauty, description, model_version, address, lat, lng, image_url)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          RETURNING id, place_id, lat, lng, beauty, description, address, model_version, created_at, image_url
-        `;
+        // Calculate H3 indices at different resolutions
+        const h3_r7 = latLngToCell(geoResult.lat, geoResult.lng, 7);
+        const h3_r9 = latLngToCell(geoResult.lat, geoResult.lng, 9);
+        const h3_r13 = latLngToCell(geoResult.lat, geoResult.lng, 13);
 
-        const result = await client.query(insertQuery, [
+        // Insert into points table
+        const insertResult = await env.DB.prepare(`
+          INSERT INTO points (place_id, beauty, description, model_version, address, lat, lng, h3_r7, h3_r9, h3_r13, image_url)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
           geoResult.place_id,
           aiResult.beauty,
           aiResult.blurb,
-          'gemini-2.5-flash', // Model version
+          'gemini-2.5-flash',
           geoResult.formatted_address,
           geoResult.lat,
           geoResult.lng,
+          h3_r7,
+          h3_r9,
+          h3_r13,
           finalImageUrl
-        ]);
+        ).run();
 
-        const newPoint = result.rows[0];
+        // Update heat aggregation tables
+        await updateHeatAggregates(env.DB, h3_r7, h3_r9, aiResult.beauty);
 
-        await client.end();
+        // Get the inserted point for response
+        const newPoint = await env.DB.prepare(
+          'SELECT id, place_id, lat, lng, beauty, description, address, model_version, created_at, image_url FROM points WHERE id = ?'
+        ).bind(insertResult.meta.last_row_id).first();
 
         return corsResponse(new Response(
           JSON.stringify({
@@ -156,17 +178,15 @@ export default {
         const [west, south, east, north] = bbox.split(',').map(Number);
         const resolution = getH3Resolution(zoom);
 
-        // Fetch candidate hexes, then filter in the Worker using h3-js
-        const query = `
+        // Fetch candidate hexes from D1, then filter in the Worker using h3-js
+        const { results } = await env.DB.prepare(`
           SELECT h3, avg FROM heat_r${resolution}
           WHERE avg IS NOT NULL
           LIMIT 20000
-        `;
-
-        const result = await client.query(query);
+        `).all();
 
         const heatData = [];
-        for (const row of result.rows) {
+        for (const row of results) {
           const [lat, lng] = cellToLatLng(row.h3);
           if (lng >= west && lng <= east && lat >= south && lat <= north) {
             heatData.push({
@@ -177,8 +197,6 @@ export default {
             });
           }
         }
-
-        await client.end();
 
         return corsResponse(new Response(
           JSON.stringify(heatData),
@@ -199,7 +217,7 @@ export default {
 
         const [west, south, east, north] = bbox.split(',').map(Number);
         
-        const query = `
+        const { results } = await env.DB.prepare(`
           SELECT 
             id,
             place_id,
@@ -213,17 +231,13 @@ export default {
             created_at,
             image_url
           FROM points
-          WHERE lat BETWEEN $2 AND $4
-            AND lng BETWEEN $1 AND $3
+          WHERE lat BETWEEN ? AND ?
+            AND lng BETWEEN ? AND ?
           LIMIT 5000
-        `;
-
-        const result = await client.query(query, [west, south, east, north]);
-        
-        await client.end();
+        `).bind(south, north, west, east).all();
 
         return corsResponse(new Response(
-          JSON.stringify(result.rows),
+          JSON.stringify(results),
           { headers: { 'Content-Type': 'application/json' } }
         ));
       }
@@ -238,30 +252,6 @@ export default {
         ));
       }
 
-      // GET /stats - Get overall statistics
-      if (request.method === 'GET' && url.pathname === '/stats') {
-        const query = `
-          SELECT 
-            COUNT(*) as total_points,
-            AVG(beauty) as avg_beauty,
-            MIN(beauty) as min_beauty,
-            MAX(beauty) as max_beauty,
-            MIN(created_at) as first_point,
-            MAX(created_at) as latest_point
-          FROM points
-        `;
-
-        const result = await client.query(query);
-        
-        await client.end();
-
-        return corsResponse(new Response(
-          JSON.stringify(result.rows[0]),
-          { headers: { 'Content-Type': 'application/json' } }
-        ));
-      }
-
-      await client.end();
       return corsResponse(new Response('Not found', { status: 404 }));
 
     } catch (error) {
