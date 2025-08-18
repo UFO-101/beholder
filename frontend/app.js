@@ -323,7 +323,7 @@ class BeautyHeatmap {
         input.style.display = 'none';
         autocompleteElement.id = 'place-autocomplete';
         // Accessible name via ARIA; placeholder is not supported by this component
-        autocompleteElement.setAttribute('aria-label', CONFIG.SEARCH_PLACEHOLDER);
+        autocompleteElement.setAttribute('aria-label', 'Behold any place.');
         
         // Apply CSS custom properties for theming
         const styles = getComputedStyle(document.documentElement);
@@ -390,6 +390,41 @@ class BeautyHeatmap {
         
         // Insert the component before the hidden input
         input.parentNode.insertBefore(autocompleteElement, input);
+        
+        // Create a placeholder overlay
+        const placeholderOverlay = document.createElement('div');
+        placeholderOverlay.textContent = 'Behold any place';
+        placeholderOverlay.style.cssText = `
+            position: absolute;
+            top: 50%;
+            left: 60px;
+            transform: translateY(-50%);
+            color: #ff0000;
+            font-weight: bold;
+            pointer-events: none;
+            font-size: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            z-index: 1;
+        `;
+        
+        // Wrap autocomplete and overlay in a relative container
+        const wrapper = document.createElement('div');
+        wrapper.style.position = 'relative';
+        wrapper.style.width = '100%';
+        autocompleteElement.parentNode.insertBefore(wrapper, autocompleteElement);
+        wrapper.appendChild(autocompleteElement);
+        wrapper.appendChild(placeholderOverlay);
+        
+        // Once hidden, never show again
+        let placeholderHiddenForever = false;
+        
+        // Hide placeholder once and for all when focused
+        autocompleteElement.addEventListener('focus', () => {
+            if (!placeholderHiddenForever) {
+                placeholderHiddenForever = true;
+                placeholderOverlay.style.display = 'none';
+            }
+        });
         
         // Listen for place selection from dropdown
         autocompleteElement.addEventListener('gmp-select', async (event) => {
@@ -1715,6 +1750,8 @@ class BeautyHeatmap {
                 addressInput.value = '';
                 if (this.autocompleteElement) {
                     this.autocompleteElement.value = '';
+                    // Trigger the placeholder to show again
+                    this.autocompleteElement.dispatchEvent(new Event('input'));
                 }
                 
                 // Refresh data to show the new point with proper styling first
