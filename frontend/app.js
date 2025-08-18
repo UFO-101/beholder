@@ -1,7 +1,7 @@
 // Configuration
 const CONFIG = {
     // Local development configuration - no API keys needed in frontend
-    API_BASE_URL: 'http://localhost:62737', // Local worker connected to production D1
+    API_BASE_URL: 'https://beholder.josephmiller101.workers.dev', // Production Cloudflare Worker
     
     // Debug settings - can be enabled via URL parameter ?debug=true
     DEBUG: new URLSearchParams(window.location.search).get('debug') === 'true',

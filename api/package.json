@@ -1,5 +1,5 @@
 {
-  "name": "beauty-heatmap-api",
+  "name": "beholder-api",
   "version": "1.0.0",
   "description": "Cloudflare Worker API for London Beauty Heatmap",
   "type": "module",

@@ -1,4 +1,4 @@
-name = "beauty-api"
+name = "beholder"
 main = "worker.js"
 compatibility_date = "2025-08-03"
 
