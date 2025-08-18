@@ -215,9 +215,6 @@ class BeautyHeatmap {
                 await this.loadGoogleMaps();
             }
             
-            // Detect theme preference
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            
             // Initialize map
             this.map = new google.maps.Map(document.getElementById('map'), {
                 center: CONFIG.INITIAL_CENTER,
@@ -225,7 +222,6 @@ class BeautyHeatmap {
                 clickableIcons: false, // Prevent Google POIs from stealing clicks behind our overlay
                 draggableCursor: 'default', // Override Google Maps default draggable cursor
                 draggingCursor: 'grabbing', // Keep grabbing cursor when actually dragging
-                colorScheme: prefersDark ? 'DARK' : 'LIGHT', // Follow system theme
                 styles: [
                     {
                         featureType: 'all',
@@ -271,9 +267,6 @@ class BeautyHeatmap {
 
             // Attach Places Autocomplete to the address input
             this.setupAutocomplete();
-            
-            // Set up theme change listener
-            this.setupThemeListener();
             
             // Load initial data
             await this.loadStats();
@@ -325,9 +318,6 @@ class BeautyHeatmap {
     }
 
     setupPlaceAutocompleteElement(input) {
-        // Detect theme preference
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        
         // Create the new web component
         const autocompleteElement = new google.maps.places.PlaceAutocompleteElement({
             requestedRegion: 'GB',
@@ -335,7 +325,7 @@ class BeautyHeatmap {
             types: ['geocode']
         });
         
-        // Replace the input with the new component and style it to match theme
+        // Replace the input with the new component
         input.style.display = 'none';
         autocompleteElement.id = 'place-autocomplete';
         // Accessible name via ARIA; placeholder is not supported by this component
@@ -358,10 +348,8 @@ class BeautyHeatmap {
         autocompleteElement.style.backgroundColor = bgColor;
         autocompleteElement.style.color = textColor;
         
-        // Set the color scheme for the autocomplete dropdown
-        if (prefersDark) {
-            autocompleteElement.style.colorScheme = 'dark';
-        }
+        // Force light color scheme
+        autocompleteElement.style.colorScheme = 'light';
         
         // Hide the clear button using CSS - try multiple approaches for shadow DOM
         const style = document.createElement('style');
@@ -467,19 +455,6 @@ class BeautyHeatmap {
         this.autocompleteElement = autocompleteElement;
     }
     
-    setupThemeListener() {
-        // Listen for theme changes and update map accordingly
-        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        mediaQuery.addListener((e) => {
-            if (this.map) {
-                this.map.setOptions({
-                    colorScheme: e.matches ? 'DARK' : 'LIGHT'
-                });
-            }
-            
-            // PlaceAutocompleteElement styling is handled by CSS color-scheme
-        });
-    }
     
 
     
