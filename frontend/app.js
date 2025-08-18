@@ -19,7 +19,7 @@ const CONFIG = {
         FADE_DURATION: 800,      // Duration of fade in/out animations in ms
         DEBOUNCE_DELAY: 150,     // Delay for debouncing map updates in ms
         MIN_ALPHA: 0,            // Minimum alpha for fade animations
-        HEX_BASE_ALPHA: 100,     // Base alpha for hexagon colors
+        HEX_BASE_ALPHA: 80,     // Base alpha for hexagon colors
         HEX_EMPTY_ALPHA: 30,     // Alpha for empty hex display
         POINT_BASE_ALPHA: 255,   // Base alpha for pins/text
         LINE_OPACITY: {
@@ -525,6 +525,8 @@ class BeautyHeatmap {
                         (ev.target.closest && ev.target.closest('#bh-iw'));
                     if (inPopup) return; // Click inside popup; don't close
                 }
+                
+                
                 this.infoWindow.close();
                 // Show the controls when popup closes
                 document.querySelector('.controls')?.classList.remove('popup-open');
@@ -1012,7 +1014,7 @@ class BeautyHeatmap {
             extruded: false,
             stroked: false,
             filled: true,
-            pickable: show,
+            pickable: false,
             onHover: this.onHexagonHover.bind(this),
             onClick: this.onHexagonClick.bind(this),
             updateTriggers: {
@@ -1441,35 +1443,7 @@ class BeautyHeatmap {
     }
     
     onHexagonClick(info) {
-        if (info.object) {
-            const hexData = info.object;
-            const avgBeauty = parseFloat(hexData.avg || 0);
-            const scoreColor = avgBeauty >= 7 ? '#4CAF50' : avgBeauty >= 5 ? '#FF9800' : '#F44336';
-            
-            const content = `
-                <div style="max-width: 280px; font-family: Arial, sans-serif;">
-                    <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                        <h3 style="margin: 0; color: ${scoreColor};">Area Average: ${avgBeauty.toFixed(1)}/10</h3>
-                    </div>
-                    <p style="margin: 5px 0;"><strong>🔷 Hexagon:</strong> ${hexData.h3}</p>
-                    <div style="background: #f5f5f5; padding: 10px; border-radius: 5px; margin: 10px 0;">
-                        <strong>📊 Statistics:</strong><br>
-                        <em>This hexagon represents the average beauty score of multiple locations in this area</em>
-                    </div>
-                    <p style="margin: 5px 0; font-size: 12px; color: #666;">
-                        <strong>🎯 Resolution:</strong> H3 Level ${this.getH3Resolution(this.map.getZoom())}<br>
-                        <strong>🗺️ Zoom to see individual points</strong>
-                    </p>
-                </div>
-            `;
-            
-            const infoWindow = new google.maps.InfoWindow({
-                content: content,
-                position: { lat: parseFloat(hexData.lat), lng: parseFloat(hexData.lng) }
-            });
-            
-            infoWindow.open(this.map);
-        }
+        // Hex popup removed - no action on hex click
     }
     
     onPointHover(info, event) {
@@ -1533,6 +1507,7 @@ class BeautyHeatmap {
             }
             this.infoWindow.setContent(content);
             this.infoWindow.setPosition({ lat: parseFloat(point.lat), lng: parseFloat(point.lng) });
+            
             this.infoWindow.open(this.map);
             
             // Hide the controls when popup is open
