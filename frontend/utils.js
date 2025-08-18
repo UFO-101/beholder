@@ -5,39 +5,58 @@
 // Color utilities
 export const BeautyColors = {
     getColorForScore(score) {
-        const colors = {
-            1: [255, 0, 0, 180],     // Red - Bad
-            2: [255, 0, 0, 180],
-            3: [255, 128, 0, 180],   // Orange - Lackluster  
-            4: [255, 128, 0, 180],
-            5: [255, 255, 0, 180],   // Yellow - Okay
-            6: [255, 255, 0, 180],
-            7: [128, 255, 0, 180],   // Light Green - Good
-            8: [128, 255, 0, 180],
-            9: [0, 255, 0, 180],     // Green - Excellent
-            10: [0, 255, 0, 180]
-        };
+        // Continuous gradient from red (1) to green (10)
+        // Clamp score between 1 and 10
+        const clampedScore = Math.max(1, Math.min(10, score || 5));
         
-        const roundedScore = Math.round(Math.max(1, Math.min(10, score || 5)));
-        return colors[roundedScore] || [128, 128, 128, 180];
+        // Normalize score to 0-1 range
+        const normalized = (clampedScore - 1) / 9;
+        
+        // Interpolate between red and green
+        // Red at 0, yellow at 0.5, green at 1
+        let r, g, b;
+        
+        if (normalized <= 0.5) {
+            // Red to yellow transition
+            const localNorm = normalized * 2; // 0 to 1 for this half
+            r = 255;
+            g = Math.round(255 * localNorm);
+            b = 0;
+        } else {
+            // Yellow to green transition
+            const localNorm = (normalized - 0.5) * 2; // 0 to 1 for this half
+            r = Math.round(255 * (1 - localNorm));
+            g = 255;
+            b = 0;
+        }
+        
+        return [r, g, b, 180];
     },
     
     getHexColorForScore(score) {
-        const colors = {
-            1: '#ff0000',  // Red - Bad
-            2: '#ff0000',
-            3: '#ff8000',  // Orange - Lackluster  
-            4: '#ff8000',
-            5: '#ffff00',  // Yellow - Okay
-            6: '#ffff00',
-            7: '#80ff00',  // Light Green - Good
-            8: '#80ff00',
-            9: '#00ff00',  // Green - Excellent
-            10: '#00ff00'
-        };
+        // Continuous gradient from red (1) to green (10)
+        const clampedScore = Math.max(1, Math.min(10, score || 5));
+        const normalized = (clampedScore - 1) / 9;
         
-        const roundedScore = Math.round(Math.max(1, Math.min(10, score || 5)));
-        return colors[roundedScore] || '#808080';
+        let r, g, b;
+        
+        if (normalized <= 0.5) {
+            // Red to yellow transition
+            const localNorm = normalized * 2;
+            r = 255;
+            g = Math.round(255 * localNorm);
+            b = 0;
+        } else {
+            // Yellow to green transition
+            const localNorm = (normalized - 0.5) * 2;
+            r = Math.round(255 * (1 - localNorm));
+            g = 255;
+            b = 0;
+        }
+        
+        // Convert to hex
+        const toHex = (n) => n.toString(16).padStart(2, '0');
+        return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
     },
     
     getScoreDescription(score) {

@@ -104,30 +104,29 @@ const CONFIG = {
         SPEED_S: 1
     },
 
-    // Beauty thresholds (normalized 0..1) for hex coloring
-    BEAUTY_THRESHOLDS: [0.2, 0.4, 0.6, 0.8],
 
-    // Color palettes
-    COLORS: {
-        // Hexagon fill colors from worst -> best (RGB only; alpha applied at runtime)
-        HEX: [
-            [255, 0, 0],      // Red (bad)
-            [255, 128, 0],    // Orange (lackluster)
-            [255, 255, 0],    // Yellow (okay)
-            [128, 255, 0],    // Light Green (good)
-            [0, 255, 0]       // Green (excellent)
-        ],
-        // Marker pin colors by score buckets
-        MARKER: {
-            BUCKETS: [2, 4, 6, 8, 10],
-            COLORS: [
-                [255, 51, 51],   // <=2
-                [255, 136, 0],   // <=4
-                [255, 221, 0],   // <=6
-                [136, 255, 0],   // <=8
-                [0, 255, 68]     // <=10
-            ]
+    // Color scale configuration - easily adjustable
+    COLOR_SCALE: {
+        // Define the gradient stops: score -> [R, G, B]
+        // Must have at least score 1 and 10 defined
+        STOPS: {
+            1: [255, 0, 0],      // Red (worst)
+            5.5: [255, 255, 0],  // Yellow (middle)
+            10: [0, 255, 0]      // Green (best)
         }
+        // Examples of other color scales:
+        // Blue to Pink:
+        // STOPS: {
+        //     1: [0, 0, 255],      // Blue (worst)
+        //     5.5: [128, 0, 255],  // Purple (middle)
+        //     10: [255, 0, 128]    // Pink (best)
+        // }
+        // Cool to Warm:
+        // STOPS: {
+        //     1: [0, 100, 255],    // Cool blue
+        //     5.5: [255, 255, 255], // White
+        //     10: [255, 50, 0]     // Warm orange
+        // }
     }
 };
 
@@ -1256,15 +1255,46 @@ class BeautyHeatmap {
         `;
     }
     
-    getBeautyIconColor(beauty) {
-        const score = Math.max(1, Math.min(10, beauty || 5));
+    // Centralized color interpolation function
+    interpolateColorScale(score) {
+        const clampedScore = Math.max(1, Math.min(10, score || 5));
+        const stops = CONFIG.COLOR_SCALE.STOPS;
         
-        // Return bright RGB colors for IconLayer
-        if (score <= 2) return [255, 51, 51];
-        if (score <= 4) return [255, 136, 0];
-        if (score <= 6) return [255, 221, 0];
-        if (score <= 8) return [136, 255, 0];
-        return [0, 255, 68];
+        // Get sorted stop points
+        const stopPoints = Object.keys(stops).map(Number).sort((a, b) => a - b);
+        
+        // Find which two stops we're between
+        let lowerStop = stopPoints[0];
+        let upperStop = stopPoints[stopPoints.length - 1];
+        
+        for (let i = 0; i < stopPoints.length - 1; i++) {
+            if (clampedScore >= stopPoints[i] && clampedScore <= stopPoints[i + 1]) {
+                lowerStop = stopPoints[i];
+                upperStop = stopPoints[i + 1];
+                break;
+            }
+        }
+        
+        // If exactly at a stop point, return that color
+        if (clampedScore === lowerStop) return [...stops[lowerStop]];
+        if (clampedScore === upperStop) return [...stops[upperStop]];
+        
+        // Interpolate between the two stops
+        const range = upperStop - lowerStop;
+        const position = (clampedScore - lowerStop) / range;
+        
+        const [r1, g1, b1] = stops[lowerStop];
+        const [r2, g2, b2] = stops[upperStop];
+        
+        const r = Math.round(r1 + (r2 - r1) * position);
+        const g = Math.round(g1 + (g2 - g1) * position);
+        const b = Math.round(b1 + (b2 - b1) * position);
+        
+        return [r, g, b];
+    }
+    
+    getBeautyIconColor(beauty) {
+        return this.interpolateColorScale(beauty);
     }
     
     getBeautyHexColor(avgBeauty) {
@@ -1273,19 +1303,10 @@ class BeautyHeatmap {
             return [128, 128, 128, CONFIG.ANIMATION.HEX_EMPTY_ALPHA]; // Very transparent gray
         }
         
-        // Color based on beauty score (1-10 scale)
-        const normalized = Math.max(1, Math.min(10, avgBeauty)) / 10; // 0.1 to 1.0
+        // Use centralized color interpolation
+        const [r, g, b] = this.interpolateColorScale(avgBeauty);
         const alpha = CONFIG.ANIMATION.HEX_BASE_ALPHA;
-        const [t1, t2, t3, t4] = CONFIG.BEAUTY_THRESHOLDS;
-        const palette = CONFIG.COLORS.HEX;
-
-        let idx = 4; // best by default
-        if (normalized <= t1) idx = 0;
-        else if (normalized <= t2) idx = 1;
-        else if (normalized <= t3) idx = 2;
-        else if (normalized <= t4) idx = 3;
-
-        const [r, g, b] = palette[idx] || [0, 255, 0];
+        
         return [r, g, b, alpha];
     }
     
