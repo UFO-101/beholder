@@ -107,12 +107,12 @@ const CONFIG = {
 
     // Color scale configuration - easily adjustable
     COLOR_SCALE: {
-        // Define the gradient stops: score -> [R, G, B]
+        // Define the gradient stops: score -> [R, G, B, A] (alpha optional, defaults to 255)
         // Must have at least score 1 and 10 defined
         STOPS: {
-            1: [255, 0, 0],      // Red (worst)
-            5.5: [255, 255, 0],  // Yellow (middle)
-            10: [0, 255, 0]      // Green (best)
+            1: [255, 0, 0, 150],     // Red (worst) - semi-opaque
+            5.5: [255, 255, 0, 30],  // Yellow (neutral) - mostly transparent
+            10: [0, 255, 0, 150]     // Green (best) - semi-opaque
         }
         // Examples of other color scales:
         // Blue to Pink:
@@ -1283,18 +1283,24 @@ class BeautyHeatmap {
         const range = upperStop - lowerStop;
         const position = (clampedScore - lowerStop) / range;
         
-        const [r1, g1, b1] = stops[lowerStop];
-        const [r2, g2, b2] = stops[upperStop];
+        const lower = stops[lowerStop];
+        const upper = stops[upperStop];
+        
+        const [r1, g1, b1, a1 = 255] = lower;
+        const [r2, g2, b2, a2 = 255] = upper;
         
         const r = Math.round(r1 + (r2 - r1) * position);
         const g = Math.round(g1 + (g2 - g1) * position);
         const b = Math.round(b1 + (b2 - b1) * position);
+        const a = Math.round(a1 + (a2 - a1) * position);
         
-        return [r, g, b];
+        return [r, g, b, a];
     }
     
     getBeautyIconColor(beauty) {
-        return this.interpolateColorScale(beauty);
+        const [r, g, b, a] = this.interpolateColorScale(beauty);
+        // For markers, we want to keep them visible, so use the color but keep them opaque
+        return [r, g, b];
     }
     
     getBeautyHexColor(avgBeauty) {
@@ -1303,11 +1309,10 @@ class BeautyHeatmap {
             return [128, 128, 128, CONFIG.ANIMATION.HEX_EMPTY_ALPHA]; // Very transparent gray
         }
         
-        // Use centralized color interpolation
-        const [r, g, b] = this.interpolateColorScale(avgBeauty);
-        const alpha = CONFIG.ANIMATION.HEX_BASE_ALPHA;
-        
-        return [r, g, b, alpha];
+        // Use centralized color interpolation with alpha
+        const [r, g, b, a] = this.interpolateColorScale(avgBeauty);
+        // Use the interpolated alpha instead of the fixed base alpha
+        return [r, g, b, a];
     }
     
     getH3Resolution(zoom) {

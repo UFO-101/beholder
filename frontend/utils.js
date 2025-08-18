@@ -12,21 +12,21 @@ export const BeautyColors = {
         // Normalize score to 0-1 range
         const normalized = (clampedScore - 1) / 9;
         
-        // Interpolate between red and green
-        // Red at 0, yellow at 0.5, green at 1
+        // Interpolate between red and green via gray
+        // Red at 0, gray at 0.5, green at 1
         let r, g, b;
         
         if (normalized <= 0.5) {
-            // Red to yellow transition
+            // Red to gray transition
             const localNorm = normalized * 2; // 0 to 1 for this half
-            r = 255;
-            g = Math.round(255 * localNorm);
+            r = Math.round(255 - (255 - 128) * localNorm);
+            g = Math.round(128 * localNorm);
             b = 0;
         } else {
-            // Yellow to green transition
+            // Gray to green transition
             const localNorm = (normalized - 0.5) * 2; // 0 to 1 for this half
-            r = Math.round(255 * (1 - localNorm));
-            g = 255;
+            r = Math.round(128 * (1 - localNorm));
+            g = Math.round(128 + 127 * localNorm);
             b = 0;
         }
         
@@ -41,16 +41,16 @@ export const BeautyColors = {
         let r, g, b;
         
         if (normalized <= 0.5) {
-            // Red to yellow transition
+            // Red to gray transition
             const localNorm = normalized * 2;
-            r = 255;
-            g = Math.round(255 * localNorm);
+            r = Math.round(255 - (255 - 128) * localNorm);
+            g = Math.round(128 * localNorm);
             b = 0;
         } else {
-            // Yellow to green transition
+            // Gray to green transition
             const localNorm = (normalized - 0.5) * 2;
-            r = Math.round(255 * (1 - localNorm));
-            g = 255;
+            r = Math.round(128 * (1 - localNorm));
+            g = Math.round(128 + 127 * localNorm);
             b = 0;
         }
         
