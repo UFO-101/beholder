@@ -1,113 +1,88 @@
-# 🐍 Python Data Collection Tools
+# Beholder Python Tools
 
-Python utilities for bulk London beauty data collection and analysis.
+Lightweight Python scripts for bulk sampling and testing the London Beauty Heatmap.
 
-## 🎯 Purpose
-
-This component provides tools for:
-- **Sampling London coordinates** with bias toward interesting areas
-- **Bulk Street View image collection** with optimization
-- **AI aesthetic evaluation** using Gemini 2.5 Flash
-- **Cost estimation** and rate limiting
-- **Upload integration** with the web platform
-
-## 📁 Structure
-
-```
-python/
-├── beholder/              # Main Python package
-│   ├── __init__.py
-│   ├── coordinates.py     # London coordinate sampling
-│   ├── geocoding.py       # Address resolution
-│   ├── streetview.py      # Street View optimization
-│   ├── aesthetic_evaluation.py  # AI evaluation
-│   ├── location_cache.py  # Cache management
-│   └── sampling.py        # Main sampling logic
-├── images/               # Downloaded Street View images
-├── main.py              # CLI entry point
-├── upload_to_heatmap.py # Upload to web platform
-├── test_integration.py  # Integration tests
-├── location_cache.json  # Location cache file
-├── pyproject.toml       # Project configuration
-└── uv.lock             # Lock file
-```
-
-## 🚀 Quick Start
+## Setup
 
 ```bash
-# Install dependencies
-uv sync
-
-# Copy environment template
-cp .env.example .env  # Add your API keys
-
-# Run sampling
-python main.py --count 10 --verbose
-
-# Upload to web platform
-python upload_to_heatmap.py --recent 5
+pip install -r requirements.txt
 ```
 
-## 🔧 Commands
+## Scripts
 
-### Data Collection
+### 1. Bulk Sampler (`bulk_sampler.py`)
+
+High-performance async script for populating the heatmap with thousands of points:
+
 ```bash
-# Sample 50 random London locations
-python main.py --count 50
+# Sample 100 random locations
+python bulk_sampler.py 100
 
-# Sample with AI evaluation
-python main.py --count 10 --evaluate
+# Use local API for testing
+python bulk_sampler.py 50 --local
 
-# Verbose output with cost tracking
-python main.py --count 5 --evaluate --verbose
+# Sample in grid pattern
+python bulk_sampler.py 100 --mode grid
+
+# Keep sampling until 500 successful points
+python bulk_sampler.py 500 --mode until
+
+# Increase parallelism (default is 10)
+python bulk_sampler.py 1000 --concurrent 25
+
+# Save results to JSON
+python bulk_sampler.py 100 --save --output results.json
 ```
 
-### Upload to Web Platform
+Features:
+- **Async processing**: Handle 10-50 concurrent requests
+- **Smart retrying**: Automatically handles failures and duplicates
+- **Multiple modes**: Random, grid, or until-target sampling
+- **Progress tracking**: Real-time statistics and success rates
+
+### 2. Prompt Tester (`prompt_tester.py`)
+
+Interactive tool for testing and tuning AI evaluation prompts:
+
 ```bash
-# Upload 10 most recent evaluations
-python upload_to_heatmap.py --recent 10
+# Interactive mode (recommended)
+python prompt_tester.py --interactive
 
-# Upload all evaluated locations
-python upload_to_heatmap.py --all
+# Test specific addresses
+python prompt_tester.py --addresses "Big Ben, London" "Tower Bridge, London"
 
-# Test API connection
-python upload_to_heatmap.py --test
+# Test all preset locations
+python prompt_tester.py --preset --html
+
+# Use local API
+python prompt_tester.py --local --preset
 ```
 
-## 🎛️ Configuration
+Features:
+- **Interactive testing**: Test individual addresses on demand
+- **HTML reports**: Visual comparison of results
+- **Preset locations**: Quick testing on known landmarks
+- **Score analysis**: Statistics and distribution charts
 
-Add to `.env`:
-```bash
-GOOGLE_MAPS_API_KEY=your_key_here
-GEMINI_API_KEY=your_key_here
-HEATMAP_API_URL=https://your-worker.workers.dev
-```
+## Workflow
 
-## 📊 Features
+1. **Development**: Use `prompt_tester.py --local --interactive` to test prompt changes
+2. **Bulk sampling**: Use `bulk_sampler.py 1000 --concurrent 25` to populate database
+3. **Production**: Point to production API without `--local` flag
 
-### Advanced Street View
-- **Method 2 optimization** with metadata API
-- **Heading calculation** for optimal camera angles
-- **Blank image detection** with retry logic
-- **Comparison tools** for old vs new methods
+## Performance Tips
 
-### AI Evaluation
-- **Detailed prompts** with examples and guidance
-- **Robust parsing** with fallback extraction
-- **Cost estimation** before batch operations
-- **Rate limiting** to avoid API limits
+- For bulk sampling, increase `--concurrent` based on your network capacity
+- Grid mode provides better geographic coverage than random
+- Use "until" mode when you need exactly N successful points
+- The API handles deduplication via Google Place IDs
 
-### Cache Management
-- **Persistent cache** to avoid duplicate API calls
-- **Place ID deduplication** 
-- **Incremental processing** 
-- **Export capabilities**
+## Note
 
-## 🔗 Integration
+All AI evaluation now happens in the Cloudflare Worker API. These Python tools are just lightweight clients for:
+- Generating random/grid coordinates
+- Managing concurrent API requests  
+- Testing prompt changes
+- Analyzing results
 
-This component integrates with:
-- **Web API**: Upload evaluated locations
-- **Database**: Via web API for storage
-- **Google APIs**: Maps + Gemini for data collection
-
-Built for bulk data collection to seed the interactive web heatmap.
+No API keys needed in Python - everything goes through the Worker!

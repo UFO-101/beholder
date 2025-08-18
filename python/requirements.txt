@@ -1,0 +1,2 @@
+# Async HTTP requests for bulk sampling
+aiohttp>=3.12.15
