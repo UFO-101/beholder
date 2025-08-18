@@ -7,7 +7,7 @@ const CONFIG = {
     DEBUG: new URLSearchParams(window.location.search).get('debug') === 'true',
     
     // Map settings
-    INITIAL_CENTER: { lat: 51.5074, lng: -0.1278 }, // London
+    INITIAL_CENTER: { lat: 51.5074, lng: -0.1278 }, // Default view (London dataset)
     INITIAL_ZOOM: 12,
     
     // Visualization settings
@@ -19,7 +19,7 @@ const CONFIG = {
         FADE_DURATION: 800,      // Duration of fade in/out animations in ms
         DEBOUNCE_DELAY: 150,     // Delay for debouncing map updates in ms
         MIN_ALPHA: 0,            // Minimum alpha for fade animations
-        HEX_BASE_ALPHA: 80,     // Base alpha for hexagon colors
+        HEX_BASE_ALPHA: 100,     // Base alpha for hexagon colors
         HEX_EMPTY_ALPHA: 30,     // Alpha for empty hex display
         POINT_BASE_ALPHA: 255,   // Base alpha for pins/text
         LINE_OPACITY: {
@@ -1639,7 +1639,7 @@ class BeautyHeatmap {
         
         
         if (!address) {
-            alert('Please enter a London address');
+            alert('Please enter an address');
             return;
         }
         

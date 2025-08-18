@@ -1,5 +1,5 @@
 /**
- * Utility functions for the London Beauty Heatmap frontend
+ * Utility functions for the Beholder Beauty Explorer frontend
  */
 
 // Color utilities

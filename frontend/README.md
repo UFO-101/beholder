@@ -1,6 +1,6 @@
-# 🌐 Frontend - Interactive Heatmap
+# 🌐 Frontend - Interactive Beauty Explorer
 
-Interactive web interface for visualizing London beauty data with zoom-adaptive layers.
+Interactive web interface for visualizing beauty data with zoom-adaptive layers and AI-powered aesthetic analysis.
 
 ## 🎯 Features
 
@@ -64,7 +64,7 @@ const CONFIG = {
 ## 🎮 User Interaction
 
 ### Adding Points
-1. Enter London address in input field
+1. Enter address in input field
 2. Optionally provide Street View image URL
 3. System auto-fetches optimized Street View if no URL provided
 4. AI evaluates aesthetic quality
